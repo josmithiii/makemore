@@ -68,7 +68,7 @@ class Mamba(nn.Module):
         self.lm_head = nn.Linear(args.d_model, args.vocab_size, bias=False)
         self.lm_head.weight = self.embedding.weight  # Tie output projection to embedding weights.
                                                      # See "Weight Tying" paper
-        self.block_size = args.block_size # FIXME: FIGURE OUT WHAT TO DO WITH THIS                                                     
+        self.block_size = args.block_size # FIXME: FIGURE OUT WHAT TO DO WITH THIS
 
     def get_block_size(self):
         return self.block_size
@@ -101,7 +101,7 @@ class Mamba(nn.Module):
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
 
         return logits, loss
-        
+
 
 
     @staticmethod
