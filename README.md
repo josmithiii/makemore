@@ -14,6 +14,7 @@ Current implementation follows a few key papers:
 - LSTM, following [Graves et al. 2014](https://arxiv.org/abs/1308.0850)
 - GRU, following [Kyunghyun Cho et al. 2014](https://arxiv.org/abs/1409.1259)
 - Transformer, following [Vaswani et al. 2017](https://arxiv.org/abs/1706.03762)
+- Mamba, following [Gu et al. 2023](https://arxiv.org/abs/2312.00752)
 
 ### Usage
 

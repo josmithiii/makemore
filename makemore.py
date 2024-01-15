@@ -28,6 +28,12 @@ from torch.utils.data.dataloader import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
 # -----------------------------------------------------------------------------
+# JOS:
+
+import mambaminimal as mm # mamba-minimal.py
+# defines class Mamba
+
+# -----------------------------------------------------------------------------
 
 @dataclass
 class ModelConfig:
@@ -607,7 +613,7 @@ if __name__ == '__main__':
     # sampling
     parser.add_argument('--top-k', type=int, default=-1, help="top-k for sampling, -1 means no top-k")
     # model
-    parser.add_argument('--type', type=str, default='transformer', help="model class type to use, bigram|mlp|rnn|gru|bow|transformer")
+    parser.add_argument('--type', type=str, default='transformer', help="model class type to use, bigram|mlp|rnn|gru|bow|transformer|mamba")
     parser.add_argument('--n-layer', type=int, default=4, help="number of layers")
     parser.add_argument('--n-head', type=int, default=4, help="number of heads (in a transformer)")
     parser.add_argument('--n-embd', type=int, default=64, help="number of feature channels in the model")
@@ -635,6 +641,21 @@ if __name__ == '__main__':
     config = ModelConfig(vocab_size=vocab_size, block_size=block_size,
                        n_layer=args.n_layer, n_head=args.n_head,
                        n_embd=args.n_embd, n_embd2=args.n_embd2)
+
+
+    mambaConfig = mm.ModelArgs(
+        d_model=args.n_embd,
+        n_layer=args.n_layer,
+        vocab_size=vocab_size,
+        block_size=block_size, # FIXME: CURRENTLY ONLY HELD BY MAMBA AND RETURNED ON REQUEST - WHAT TO DO WITH IT?
+        d_state=args.n_head, # too janky?
+        expand=2, # FIXME: bring out state-expansion-factor parameter
+        dt_rank='auto', # auto => d_model/16
+        d_conv=4, # Conv1d kernel size
+        pad_vocab_size_multiple=8, # Forces vocab_size to be a multiple of this
+        conv_bias=True,
+        bias=False)
+
     if args.type == 'transformer':
         model = Transformer(config)
     elif args.type == 'bigram':
@@ -647,6 +668,8 @@ if __name__ == '__main__':
         model = RNN(config, cell_type='gru')
     elif args.type == 'bow':
         model = BoW(config)
+    elif args.type == 'mamba':
+        model = mm.Mamba(mambaConfig)
     else:
         raise ValueError(f'model type {args.type} is not recognized')
     model.to(args.device)
@@ -716,4 +739,3 @@ if __name__ == '__main__':
         # termination conditions
         if args.max_steps >= 0 and step >= args.max_steps:
             break
-
