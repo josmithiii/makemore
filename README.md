@@ -1,3 +1,6 @@
+# This Fork
+
+Adds mamba-minimal to compare it with transformers et al.
 
 # makemore
 
