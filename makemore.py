@@ -12,6 +12,8 @@ Changes from minGPT:
   difference at the scale that we operate on here.
 """
 
+import pdb
+
 import os
 import sys
 import time
@@ -693,6 +695,8 @@ if __name__ == '__main__':
     while True:
 
         t0 = time.time()
+
+        pdb.set_trace()
 
         # get the next batch, ship to device, and unpack it to input and target
         batch = batch_loader.next()

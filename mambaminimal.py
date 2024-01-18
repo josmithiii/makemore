@@ -63,12 +63,12 @@ class Mamba(nn.Module):
 
         self.embedding = nn.Embedding(args.vocab_size, args.d_model)
         self.layers = nn.ModuleList([ResidualBlock(args) for _ in range(args.n_layer)])
-        self.norm_f = RMSNorm(args.d_model)
+        self.norm_f = RMSNorm(args.d_model) # normalize layer by RMS and scale radii by a learned weighting
 
         self.lm_head = nn.Linear(args.d_model, args.vocab_size, bias=False)
         self.lm_head.weight = self.embedding.weight  # Tie output projection to embedding weights.
                                                      # See "Weight Tying" paper
-        self.block_size = args.block_size # FIXME: FIGURE OUT WHAT TO DO WITH THIS
+        self.block_size = args.block_size # FIXME JOS: FIGURE OUT WHAT TO DO WITH THIS
 
     def get_block_size(self):
         return self.block_size
@@ -158,8 +158,8 @@ class ResidualBlock(nn.Module):
         """Simple block wrapping Mamba block with normalization and residual connection."""
         super().__init__()
         self.args = args
-        self.mixer = MambaBlock(args)
-        self.norm = RMSNorm(args.d_model)
+        self.mixer = MambaBlock(args) # Fig. 3, Sec. 3.4 of Mamba paper [1]
+        self.norm = RMSNorm(args.d_model) # normalize layer by RMS and scale radii by learned weights
 
 
     def forward(self, x):
@@ -236,7 +236,7 @@ class MambaBlock(nn.Module):
         (x, res) = x_and_res.split(split_size=[self.args.d_inner, self.args.d_inner], dim=-1)
 
         x = rearrange(x, 'b l d_in -> b d_in l')
-        x = self.conv1d(x)[:, :, :l] # chop off "ringing" of convolution after l samples
+        x = self.conv1d(x)[:, :, :l] # :l chops off any "ringing" of convolution after l samples
         x = rearrange(x, 'b d_in l -> b l d_in')
 
         x = F.silu(x)
