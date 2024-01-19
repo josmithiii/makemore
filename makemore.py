@@ -542,24 +542,83 @@ class CharDataset(Dataset):
 
     def __getitem__(self, idx):
         word = self.words[idx]
-        ix = self.encode(word)
-        x = torch.zeros(self.max_word_length + 1, dtype=torch.long)
-        y = torch.zeros(self.max_word_length + 1, dtype=torch.long)
-        x[1:1+len(ix)] = ix
-        y[:len(ix)] = ix
-        y[len(ix)+1:] = -1 # index -1 will mask the loss at the inactive locations
+        if word[0] == '|':  # .tsv such as ListOps
+            _, target, test = word.split('|')  # example received as "|target|test"
+            # Create this format:
+            # x: test ......
+            # y: .... target
+            ix = self.encode(test)  # each char converted to an integer
+            iy = self.encode(target)  # each char of target converted to an integer
+            nx = len(ix)
+            ny = len(iy)
+            x = torch.zeros(self.max_word_length, dtype=torch.long)
+            y = torch.zeros(self.max_word_length, dtype=torch.long)
+            x[:nx] = ix
+            x[nx:] = -1
+            y[:nx] = -1
+            y[nx:nx+ny] = iy
+        else:
+            ix = self.encode(word)
+            x = torch.zeros(self.max_word_length + 1, dtype=torch.long)
+            y = torch.zeros(self.max_word_length + 1, dtype=torch.long)
+            x[1:1+len(ix)] = ix  # 0,x[0],x[1],...,x[end]
+            y[:len(ix)] = ix
+            y[len(ix)+1:] = -1 # index -1 will mask the loss at the inactive locations
+
         return x, y
 
 def create_datasets(input_file):
 
+    # print("=== AT DATA LOADING BREAKPOINT ===")
+    # pdb.set_trace()
+
     # preprocessing of the input text file
     with open(input_file, 'r') as f:
         data = f.read()
-    words = data.splitlines()
-    words = [w.strip() for w in words] # get rid of any leading or trailing white space
-    words = [w for w in words if w] # get rid of any empty strings
-    chars = sorted(list(set(''.join(words)))) # all the possible characters
-    max_word_length = max(len(w) for w in words)
+
+    name,ext = os.path.splitext(input_file)
+    
+    if ext == '.tsv': # ListOps case [added by jos]
+        #N: lines = [line for line in data if line] # get rid of any empty strings
+        lines = data.splitlines()
+        # targets, tests = lines.toString().split('\t',1)
+        # GPT-4's fancy method: targets, tests = zip(*[line.split('\t', 1) for line in lines])
+
+        targets = []
+        tests = []
+        words = [] # hacky pack for CharDataset
+
+        for line in lines:
+
+            target, test = line.split('\t', 1)
+
+            trgs = target.strip()
+            assert trgs != '', "Target is empty after stripping"
+            targets.append(trgs)
+
+            ts = test.strip()
+            assert ts != '', "Test is empty after stripping"
+            tests.append(ts)
+
+            # My version: words.append('|' + trgs + '|' + ts)
+            words.append('|'.join([trgs, ts])) # GPT-4 wins again
+
+        chars = sorted(list(set(''.join(trgs+ts)))) # all possible characters
+        max_target_length = max(len(w) for w in targets)
+        max_test_length   = max(len(w) for w in tests)
+        max_word_length   = max_target_length + max_test_length # format is test...\n ...target, nonoverlapping
+
+        # print("=== AT DATA LOADING BREAKPOINT ===")
+        # pdb.set_trace()
+
+    elif ext == '.txt': # original makemore case
+
+        words = data.splitlines()
+        words = [w.strip() for w in words] # get rid of any leading or trailing white space
+        words = [w for w in words if w] # get rid of any empty strings
+        chars = sorted(list(set(''.join(words)))) # all the possible characters
+        max_word_length = max(len(w) for w in words)
+
     print(f"number of examples in the dataset: {len(words)}")
     print(f"max word length: {max_word_length}")
     print(f"number of unique characters in the vocabulary: {len(chars)}")
@@ -604,7 +663,7 @@ if __name__ == '__main__':
     # parse command line args
     parser = argparse.ArgumentParser(description="Make More")
     # system/input/output
-    parser.add_argument('--input-file', '-i', type=str, default='names.txt', help="input file with things one per line")
+    parser.add_argument('--input-file', '-i', type=str, default='names.txt', help="input text file, where .txt suffix => one word per line to make more of, while .tsv => <answer><tab><prompt> each line (e.g., ListOps data)")
     parser.add_argument('--work-dir', '-o', type=str, default='out', help="output working directory")
     parser.add_argument('--resume', action='store_true', help="when this flag is used, we will resume optimization from existing model in the workdir")
     parser.add_argument('--sample-only', action='store_true', help="just sample from the model and quit, don't train")
@@ -696,7 +755,8 @@ if __name__ == '__main__':
 
         t0 = time.time()
 
-        pdb.set_trace()
+        # print("=== AT TRAINING BREAKPOINT ===")
+        # pdb.set_trace()
 
         # get the next batch, ship to device, and unpack it to input and target
         batch = batch_loader.next()

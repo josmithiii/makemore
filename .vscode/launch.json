@@ -27,7 +27,7 @@
             "cwd": "${workspaceFolder}", // Current working directory
             "env": {}, // Environment variables
             "envFile": "${workspaceFolder}/.env", // Environment variable file
-            "stopOnEntry": true,
+            "stopOnEntry": false,
             "justMyCode": false,
             "showReturnValue": true
         }
