@@ -46,6 +46,8 @@ class ModelConfig:
     n_embd: int = 64
     n_embd2: int = 64
     n_head: int = 4
+    data_mode_QA: bool = False # data modes are 'words' (original) and "Question/Answer" (new)
+    # autoset by file extension (.txt for words, .tsv for QA such as ListOps)
 
 # -----------------------------------------------------------------------------
 # Transformer Language Model (*exactly* as used in GPT-2)
@@ -556,7 +558,8 @@ class CharDataset(Dataset):
                 assert false
             assert iw != 0 # reserved for padding char
             ix.append(iw)
-        return ix
+        ixt = torch.tensor(ix,dtype=torch.long)
+        return ixt
 
     def decode(self, ix):
         word = ''.join(self.itos[i] for i in ix)
@@ -609,7 +612,6 @@ class CharDataset(Dataset):
             y = torch.zeros(self.max_word_length + 1, dtype=torch.long)
             x[1:1+len(ix)] = ix  # 0,x[0],x[1],...,x[end]
             y[:len(ix)] = ix
-            print("JOS: Change -1 to zero now?\n")
             y[len(ix)+1:] = -1 # index -1 will mask the loss at the inactive locations
 
         return x, y
@@ -626,6 +628,7 @@ def create_datasets(input_file):
     name,ext = os.path.splitext(input_file)
 
     if ext == '.tsv': # ListOps case [added by jos]
+        data_mode = 'QA'
         #N: lines = [line for line in data if line] # get rid of any empty strings
         lines = data.splitlines()
         # targets, tests = lines.toString().split('\t',1)
@@ -662,6 +665,7 @@ def create_datasets(input_file):
         # pdb.set_trace()
 
     elif ext == '.txt': # original makemore case
+        data_mode = 'words'
 
         words = data.splitlines()
         words = [w.strip() for w in words] # get rid of any leading or trailing white space
@@ -686,7 +690,7 @@ def create_datasets(input_file):
     train_dataset = CharDataset(train_words, chars, max_word_length)
     test_dataset = CharDataset(test_words, chars, max_word_length)
 
-    return train_dataset, test_dataset
+    return train_dataset, test_dataset, data_mode
 
 class InfiniteDataLoader:
     """
@@ -743,16 +747,15 @@ if __name__ == '__main__':
     writer = SummaryWriter(log_dir=args.work_dir)
 
     # init datasets
-    train_dataset, test_dataset = create_datasets(args.input_file)
+    train_dataset, test_dataset, data_mode = create_datasets(args.input_file)
     vocab_size = train_dataset.get_vocab_size()
     block_size = train_dataset.get_output_length()
     print(f"dataset determined that: {vocab_size=}, {block_size=}")
 
     # init model
     config = ModelConfig(vocab_size=vocab_size, block_size=block_size,
-                       n_layer=args.n_layer, n_head=args.n_head,
-                       n_embd=args.n_embd, n_embd2=args.n_embd2)
-
+                         n_layer=args.n_layer, n_head=args.n_head,
+                         n_embd=args.n_embd, n_embd2=args.n_embd2, data_mode_QA=(data_mode=='QA'))
 
     mambaConfig = mm.ModelArgs(
         d_model=args.n_embd,
