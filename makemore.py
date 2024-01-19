@@ -315,7 +315,7 @@ class RNN(nn.Module):
         self.block_size = config.block_size
         self.vocab_size = config.vocab_size
         self.start = nn.Parameter(torch.zeros(1, config.n_embd2)) # the starting hidden state
-        self.wte = nn.Embedding(config.vocab_size, config.n_embd) # token embeddings table
+        self.wte = nn.Embedding(config.vocab_size+1, config.n_embd) # token embeddings table, +1 for NULL
         if cell_type == 'rnn':
             self.cell = RNNCell(config)
         elif cell_type == 'gru':
@@ -328,6 +328,10 @@ class RNN(nn.Module):
     def forward(self, idx, targets=None):
         device = idx.device
         b, t = idx.size()
+
+        # print("\n=== AT DATA EMBEDDING BREAKPOINT ===\n")
+        # print(f"idx == {idx}\n")
+        # pdb.set_trace()
 
         # embed all the integers up front and all at once for efficiency
         emb = self.wte(idx) # (b, t, n_embd)
@@ -517,9 +521,9 @@ class CharDataset(Dataset):
         self.words = words
         self.chars = chars
         self.max_word_length = max_word_length
-        self.stoi = {ch:i+1 for i,ch in enumerate(chars)}
+        self.stoi = {ch:i+1 for i,ch in enumerate(chars)} # +1 to reserve 0 for padding char
         self.itos = {i:s for s,i in self.stoi.items()} # inverse mapping
-        self.unknown_index = -2
+        self.unknown_index = -1
 
     def __len__(self):
         return len(self.words)
@@ -534,12 +538,24 @@ class CharDataset(Dataset):
         return self.max_word_length + 1 # <START> token followed by words
 
     def encode(self, word):
+
         # original: ix = torch.tensor([self.stoi[w] for w in word], dtype=torch.long)
-        ix = torch.tensor([self.stoi.get(w, self.unknown_index) for w in word], dtype=torch.long)
-        for i in range(len(ix)):
-            if ix[i] == self.unknown_index:
-                print(f"*** unknown char at index {i} == {word[i]}")
-        assert all(ixi != self.unknown_index for ixi in ix), "Unknown chars in word " + word
+
+        # JOS 1: ix = torch.tensor([self.stoi.get(w, self.unknown_index) for w in word], dtype=torch.long)
+        # for i in range(len(ix)):
+        #     if ix[i] == self.unknown_index:
+        #         print(f"*** unknown char at index {i} == {word[i]}")
+        # assert all(ixi != self.unknown_index for ixi in ix), "Unknown chars in word " + word
+
+        ix = []
+        for w in word:
+            # print(f"\nencode: word == {word}\n")
+            iw = self.stoi.get(w, self.unknown_index)
+            if iw == self.unknown_index:
+                print(f"*** unknown char `{w}'\n")
+                assert false
+            assert iw != 0 # reserved for padding char
+            ix.append(iw)
         return ix
 
     def decode(self, ix):
@@ -548,32 +564,52 @@ class CharDataset(Dataset):
 
     def __getitem__(self, idx):
         word = self.words[idx].strip()
-        print ("\nword == " + word)
+        # print ("\nword == " + word)
         if word[0] == '|':  # .tsv such as ListOps
             _, target, test = word.split('|')  # example received as "|target|test"
-            print(f"\ntest == {test}\n")
-            print(f"\ntarget == {target}\n")
+            # print(f"\ntest == {test}\n\ntarget == {target}\n")
             # Create this format:
             # x: test ......
             # y: .... target
-            print(f"\nEncoding test == {test}\n")
+
+            # We seem to be in a multithreaded callback that cannot do this:
+            # print("=== AT DATA ENCODING BREAKPOINT ===")
+            # pdb.set_trace()
+
+            # print(f"\nEncoding test == {test}\n")
             ix = self.encode(test)  # each char converted to an integer
-            print(f"\nEncoding target == {target}\n")
+            # print(f"\nEncoding target == {target}\n")
             iy = self.encode(target)  # each char of target converted to an integer
             nx = len(ix)
             ny = len(iy)
             x = torch.zeros(self.max_word_length, dtype=torch.long)
             y = torch.zeros(self.max_word_length, dtype=torch.long)
-            x[:nx] = ix
-            x[nx:] = -1
-            y[:nx] = -1
-            y[nx:nx+ny] = iy
+
+            # Convert ix to a torch.LongTensor if it's not already
+            ix_tensor = torch.tensor(ix, dtype=torch.long) if not isinstance(ix, torch.Tensor) else ix.long()
+
+            # Assign ix_tensor to the beginning of x
+            x[:nx] = ix_tensor
+
+            # Fill the rest of x with -1
+            x[nx:] = 0
+
+            # Fill the beginning of y with -1
+            y[:nx] = 0
+
+            # Convert iy to a torch.LongTensor if it's not already
+            iy_tensor = torch.tensor(iy, dtype=torch.long) if not isinstance(iy, torch.Tensor) else iy.long()
+
+            # Assign iy_tensor to the appropriate slice of y
+            y[nx:nx+ny] = iy_tensor
+
         else:
             ix = self.encode(word)
             x = torch.zeros(self.max_word_length + 1, dtype=torch.long)
             y = torch.zeros(self.max_word_length + 1, dtype=torch.long)
             x[1:1+len(ix)] = ix  # 0,x[0],x[1],...,x[end]
             y[:len(ix)] = ix
+            print("JOS: Change -1 to zero now?\n")
             y[len(ix)+1:] = -1 # index -1 will mask the loss at the inactive locations
 
         return x, y
@@ -588,7 +624,7 @@ def create_datasets(input_file):
         data = f.read()
 
     name,ext = os.path.splitext(input_file)
-    
+
     if ext == '.tsv': # ListOps case [added by jos]
         #N: lines = [line for line in data if line] # get rid of any empty strings
         lines = data.splitlines()
@@ -614,7 +650,10 @@ def create_datasets(input_file):
             # My version: words.append('|' + trgs + '|' + ts)
             words.append('|' + '|'.join([trgs, ts])) # GPT-4 wins again
 
-        chars = sorted(list(set(''.join(trgs+ts)))) # all possible characters
+
+        chars_set = set(''.join(words))
+        chars_set.discard('|')
+        chars = sorted(list(chars_set))
         max_target_length = max(len(w) for w in targets)
         max_test_length   = max(len(w) for w in tests)
         max_word_length   = max_target_length + max_test_length # format is test...\n ...target, nonoverlapping
