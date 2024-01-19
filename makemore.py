@@ -519,6 +519,7 @@ class CharDataset(Dataset):
         self.max_word_length = max_word_length
         self.stoi = {ch:i+1 for i,ch in enumerate(chars)}
         self.itos = {i:s for s,i in self.stoi.items()} # inverse mapping
+        self.unknown_index = -2
 
     def __len__(self):
         return len(self.words)
@@ -533,7 +534,12 @@ class CharDataset(Dataset):
         return self.max_word_length + 1 # <START> token followed by words
 
     def encode(self, word):
-        ix = torch.tensor([self.stoi[w] for w in word], dtype=torch.long)
+        # original: ix = torch.tensor([self.stoi[w] for w in word], dtype=torch.long)
+        ix = torch.tensor([self.stoi.get(w, self.unknown_index) for w in word], dtype=torch.long)
+        for i in range(len(ix)):
+            if ix[i] == self.unknown_index:
+                print(f"*** unknown char at index {i} == {word[i]}")
+        assert all(ixi != self.unknown_index for ixi in ix), "Unknown chars in word " + word
         return ix
 
     def decode(self, ix):
@@ -541,14 +547,18 @@ class CharDataset(Dataset):
         return word
 
     def __getitem__(self, idx):
-        word = self.words[idx]
-        print ("word == " + word)
+        word = self.words[idx].strip()
+        print ("\nword == " + word)
         if word[0] == '|':  # .tsv such as ListOps
             _, target, test = word.split('|')  # example received as "|target|test"
+            print(f"\ntest == {test}\n")
+            print(f"\ntarget == {target}\n")
             # Create this format:
             # x: test ......
             # y: .... target
+            print(f"\nEncoding test == {test}\n")
             ix = self.encode(test)  # each char converted to an integer
+            print(f"\nEncoding target == {target}\n")
             iy = self.encode(target)  # each char of target converted to an integer
             nx = len(ix)
             ny = len(iy)
