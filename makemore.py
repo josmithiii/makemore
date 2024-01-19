@@ -542,6 +542,7 @@ class CharDataset(Dataset):
 
     def __getitem__(self, idx):
         word = self.words[idx]
+        print ("word == " + word)
         if word[0] == '|':  # .tsv such as ListOps
             _, target, test = word.split('|')  # example received as "|target|test"
             # Create this format:
@@ -601,7 +602,7 @@ def create_datasets(input_file):
             tests.append(ts)
 
             # My version: words.append('|' + trgs + '|' + ts)
-            words.append('|'.join([trgs, ts])) # GPT-4 wins again
+            words.append('|' + '|'.join([trgs, ts])) # GPT-4 wins again
 
         chars = sorted(list(set(''.join(trgs+ts)))) # all possible characters
         max_target_length = max(len(w) for w in targets)
