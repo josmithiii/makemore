@@ -44,7 +44,7 @@ DataMode = Enum('DataMode', ['WORDS', 'QA', 'DISTANCE'])
 
 @dataclass
 class ModelConfig:
-    block_size: int = None # length of the input sequences of integers
+    block_size: int = 16 # length of the input sequences of integers, originally max_word_length+1
     vocab_size: int = None # the input integers are in range [0 .. vocab_size -1]
     # parameters below control the sizes of each model slightly differently
     n_layer: int = 4
@@ -166,6 +166,8 @@ class Transformer(nn.Module):
         # if we are given some desired targets also calculate the loss
         loss = None
         if targets is not None:
+            print(f"Given {len(idx)} in idx: {idx=}\n")
+            print(f"have {len(targets)} targets: {targets=}\n")
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
 
         return logits, loss
@@ -556,7 +558,10 @@ class CharDataset(Dataset):
         return len(self.chars) + 1 # all the possible characters and special 0 token
 
     def get_output_length(self):
-        return self.max_word_length + 1 # <START> token followed by words
+        if self.data_mode == DataMode.DISTANCE:
+            return 1 # int maps to int
+        else:
+            return self.max_word_length + 1 # <START> token followed by words
 
     def encode(self, word):
 
@@ -669,16 +674,17 @@ def create_datasets(input_file, data_mode):
     words = [w.strip() for w in words] # get rid of any leading or trailing white space
     words = [w for w in words if w] # get rid of any empty strings
     chars = sorted(list(set(''.join(words)))) # all the possible characters
-    max_word_length = max(len(w) for w in words)
 
     name,ext = os.path.splitext(input_file)
 
     if data_mode == DataMode.WORDS: # original makemore case - input = list of words such as names
         assert ext == '.txt', f"DataMode.WORDS requires .txt input format, got {ext}"
+        max_word_length = max(len(w) for w in words)
     elif data_mode == DataMode.DISTANCE: # distance ints
         assert ext == '.txt', "DataMode.DISTANCE requires .txt input format"
         ints = [int(w) for w in words]
         max_int = max(ints)
+        max_word_length = 1 # map from int to int = samples to last occurrence of that int
         print(f"DISTANCE data_mode:\n\twords = {words}\n\tints = {ints}\n\tmax_int = {max_int}\n")
     elif data_mode == DataMode.QA: # ListOps case [added to makemore]
         assert ext == '.tsv', "DataMode.QA requires .tsv input format"
@@ -763,6 +769,7 @@ if __name__ == '__main__':
     parser.add_argument('--input-file', '-i', type=str, default='names.txt', help="input text file, where .txt suffix => one word per line to make more of, while .tsv => <answer><tab><prompt> each line (e.g., ListOps data)")
     parser.add_argument('--work-dir', '-o', type=str, default='out', help="output working directory")
     parser.add_argument('--data-mode', type=str, default="words", help="data type: (words|qa|distance)")
+    parser.add_argument('--block-size', type=int, default=16, help="block size: (max word length | max Q+A length | number of distances per shot)")
     parser.add_argument('--resume', action='store_true', help="when this flag is used, we will resume optimization from existing model in the workdir")
     parser.add_argument('--sample-only', action='store_true', help="just sample from the model and quit, don't train")
     parser.add_argument('--num-workers', '-n', type=int, default=4, help="number of data workers for both train/test")
@@ -802,13 +809,17 @@ if __name__ == '__main__':
         return dm
 
     data_mode = str2dm(args.data_mode)
-    print(f"dataset determined that: {data_mode=}")
+    print(f"dataset determined that: {data_mode=}\n")
 
     # init datasets
     train_dataset, test_dataset = create_datasets(args.input_file, data_mode)
     vocab_size = train_dataset.get_vocab_size()
-    block_size = train_dataset.get_output_length()
-    print(f"dataset determined that: {vocab_size=}, {block_size=}")
+    block_size = args.block_size
+    min_block_size = train_dataset.get_output_length()
+    print(f"dataset determined that: {vocab_size=}, {min_block_size=}\n")
+    if block_size < min_block_size:
+        print(f"increasing {block_size=} to {min_block_size=}\n")
+        block_size = min_block_size
 
     # init model
     config = ModelConfig(vocab_size=vocab_size, block_size=block_size,
