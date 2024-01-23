@@ -35,7 +35,12 @@ from torch.utils.tensorboard import SummaryWriter
 import mambaminimal as mm # mamba-minimal.py
 # defines class Mamba
 
+from enum import Enum
+import cProfile
+
 # -----------------------------------------------------------------------------
+
+DataMode = Enum('DataMode', ['WORDS', 'QA', 'DISTANCE'])
 
 @dataclass
 class ModelConfig:
@@ -43,10 +48,10 @@ class ModelConfig:
     vocab_size: int = None # the input integers are in range [0 .. vocab_size -1]
     # parameters below control the sizes of each model slightly differently
     n_layer: int = 4
-    n_embd: int = 64
-    n_embd2: int = 64
+    n_embd: int = 64  # input embedding
+    n_embd2: int = 64 # hidden-state embedding (GRU et al.)
     n_head: int = 4
-    data_mode_QA: bool = False # data modes are 'words' (original) and "Question/Answer" (new)
+    data_mode: DataMode = DataMode.WORDS # data modes are WORDS (original), QA (Question/Answer), and DISTANCE
     # autoset by file extension (.txt for words, .tsv for QA such as ListOps)
 
 # -----------------------------------------------------------------------------
@@ -473,6 +478,14 @@ def generate(model, idx, max_new_tokens, temperature=1.0, do_sample=False, top_k
 def print_samples(num=10):
     """ samples from the model and pretty prints the decoded samples """
     X_init = torch.zeros(num, 1, dtype=torch.long).to(args.device)
+    if data_mode == DataMode.WORDS:
+        X_init = torch.zeros(num, 1, dtype=torch.long).to(args.device)
+    elif data_mode == DataMode.QA:
+        X_init = torch.zeros(num, 1, dtype=torch.long).to(args.device)
+    elif data_mode == DataMode.DISTANCE:
+        X_init = torch.zeros(num, 1, dtype=torch.long).to(args.device)
+    else:
+        assert False, f"Unrecognized data mode {data_mode=}"
     top_k = args.top_k if args.top_k != -1 else None
     steps = train_dataset.get_output_length() - 1 # -1 because we already start with <START> token (index 0)
     X_samp = generate(model, X_init, steps, top_k=top_k, do_sample=True).to('cpu')
@@ -519,9 +532,15 @@ def evaluate(model, dataset, batch_size=50, max_batches=None):
 
 class CharDataset(Dataset):
 
-    def __init__(self, words, chars, max_word_length):
-        self.words = words
-        self.chars = chars
+    def __init__(self, mode, words, chars, max_word_length):
+        self.data_mode = mode  # DataMode.(WORDS|QA|DISTANCE)
+        self.words = words     # List of strings: names (WORDS) | ListOps examples (QA) | ints (DISTANCE)
+        if mode == DataMode.DISTANCE:
+            self.ints = [int(w) for w in words]
+            print(f"ints = {self.ints}\n")
+            self.lastOccurrence = {value: index for index, value in enumerate(self.ints)} # dictionary mapping each int to its last occurrence (index)
+            print(f"lastOccurrence = {self.lastOccurrence}\n")
+        self.chars = chars     # Set of all chars used in words
         self.max_word_length = max_word_length
         self.stoi = {ch:i+1 for i,ch in enumerate(chars)} # +1 to reserve 0 for padding char
         self.itos = {i:s for s,i in self.stoi.items()} # inverse mapping
@@ -555,9 +574,10 @@ class CharDataset(Dataset):
             iw = self.stoi.get(w, self.unknown_index)
             if iw == self.unknown_index:
                 print(f"*** unknown char `{w}'\n")
-                assert false
+                assert False
             assert iw != 0 # reserved for padding char
             ix.append(iw)
+        ixt = torch.tensor(ix,dtype=torch.long)
         ixt = torch.tensor(ix,dtype=torch.long)
         return ixt
 
@@ -565,10 +585,38 @@ class CharDataset(Dataset):
         word = ''.join(self.itos[i] for i in ix)
         return word
 
-    def __getitem__(self, idx):
-        word = self.words[idx].strip()
-        # print ("\nword == " + word)
-        if word[0] == '|':  # .tsv such as ListOps
+    def samplesToLastOccurrence(self, ix, idx):
+        stlo = 0
+        iolo = 0
+        for ixi in reversed(range(idx-1)):
+            if ix == self.ints[ixi]:
+                stlo = idx - ixi
+                iolo = ixi
+                break
+        print(f"Last occurrence of ix = {ix} from index {idx} is at index {iolo} which is {stlo} samples earlier\n")
+        return stlo
+
+    def __getitem__(self, idx): # CharDataset.__getitem__: idx is an int addressing one word in words:
+        print (f"__getitem__: idx = {idx}, word == {self.words[idx]}, data_mode = {self.data_mode}\n")
+        if self.data_mode == DataMode.WORDS:
+            word = self.words[idx].strip()
+            assert word[0] != '|', f"ListOps input format not support by data-mode WORDS"
+            ix = self.encode(word)
+            x = torch.zeros(self.max_word_length + 1, dtype=torch.long)
+            y = torch.zeros(self.max_word_length + 1, dtype=torch.long)
+            x[1:1+len(ix)] = ix  # 0,x[0],x[1],...,x[end]
+            y[:len(ix)] = ix
+            y[len(ix)+1:] = -1 # index -1 will mask the loss at the inactive locations
+        elif self.data_mode == DataMode.DISTANCE: # randomly ordered ints
+            ix = self.ints[idx]
+            iy = self.samplesToLastOccurrence(ix,idx)
+            x = torch.zeros(1, dtype=torch.long)
+            y = torch.zeros(1, dtype=torch.long)
+            x[0] = ix
+            y[0] = iy
+        elif self.data_mode == DataMode.QA:
+            word = self.words[idx].strip()
+            assert word[0] == '|', f"QA data-mode requires ListOps input format (.tsv), found word[0] = {word[0]}"
             _, target, test = word.split('|')  # example received as "|target|test"
             # print(f"\ntest == {test}\n\ntarget == {target}\n")
             # Create this format:
@@ -606,31 +654,35 @@ class CharDataset(Dataset):
             # Assign iy_tensor to the appropriate slice of y
             y[nx:nx+ny] = iy_tensor
 
-        else:
-            ix = self.encode(word)
-            x = torch.zeros(self.max_word_length + 1, dtype=torch.long)
-            y = torch.zeros(self.max_word_length + 1, dtype=torch.long)
-            x[1:1+len(ix)] = ix  # 0,x[0],x[1],...,x[end]
-            y[:len(ix)] = ix
-            y[len(ix)+1:] = -1 # index -1 will mask the loss at the inactive locations
-
         return x, y
 
-def create_datasets(input_file):
+def create_datasets(input_file, data_mode):
 
     # print("=== AT DATA LOADING BREAKPOINT ===")
     # pdb.set_trace()
 
     # preprocessing of the input text file
     with open(input_file, 'r') as f:
-        data = f.read()
+        data = f.read() # read whole file into a single str
+
+    words = data.splitlines() # words[i] can be a word, ListOps example, or int
+    words = [w.strip() for w in words] # get rid of any leading or trailing white space
+    words = [w for w in words if w] # get rid of any empty strings
+    chars = sorted(list(set(''.join(words)))) # all the possible characters
+    max_word_length = max(len(w) for w in words)
 
     name,ext = os.path.splitext(input_file)
 
-    if ext == '.tsv': # ListOps case [added by jos]
-        data_mode = 'QA'
-        #N: lines = [line for line in data if line] # get rid of any empty strings
-        lines = data.splitlines()
+    if data_mode == DataMode.WORDS: # original makemore case - input = list of words such as names
+        assert ext == '.txt', f"DataMode.WORDS requires .txt input format, got {ext}"
+    elif data_mode == DataMode.DISTANCE: # distance ints
+        assert ext == '.txt', "DataMode.DISTANCE requires .txt input format"
+        ints = [int(w) for w in words]
+        max_int = max(ints)
+        print(f"DISTANCE data_mode:\n\twords = {words}\n\tints = {ints}\n\tmax_int = {max_int}\n")
+    elif data_mode == DataMode.QA: # ListOps case [added to makemore]
+        assert ext == '.tsv', "DataMode.QA requires .tsv input format"
+        lines = words # Each line is a complete ListOps example in the format "|solution|problem"
         # targets, tests = lines.toString().split('\t',1)
         # GPT-4's fancy method: targets, tests = zip(*[line.split('\t', 1) for line in lines])
 
@@ -653,7 +705,6 @@ def create_datasets(input_file):
             # My version: words.append('|' + trgs + '|' + ts)
             words.append('|' + '|'.join([trgs, ts])) # GPT-4 wins again
 
-
         chars_set = set(''.join(words))
         chars_set.discard('|')
         chars = sorted(list(chars_set))
@@ -664,14 +715,6 @@ def create_datasets(input_file):
         # print("=== AT DATA LOADING BREAKPOINT ===")
         # pdb.set_trace()
 
-    elif ext == '.txt': # original makemore case
-        data_mode = 'words'
-
-        words = data.splitlines()
-        words = [w.strip() for w in words] # get rid of any leading or trailing white space
-        words = [w for w in words if w] # get rid of any empty strings
-        chars = sorted(list(set(''.join(words)))) # all the possible characters
-        max_word_length = max(len(w) for w in words)
 
     print(f"number of examples in the dataset: {len(words)}")
     print(f"max word length: {max_word_length}")
@@ -687,10 +730,10 @@ def create_datasets(input_file):
     print(f"split up the dataset into {len(train_words)} training examples and {len(test_words)} test examples")
 
     # wrap in dataset objects
-    train_dataset = CharDataset(train_words, chars, max_word_length)
-    test_dataset = CharDataset(test_words, chars, max_word_length)
+    train_dataset = CharDataset(data_mode, train_words, chars, max_word_length)
+    test_dataset = CharDataset(data_mode, test_words, chars, max_word_length)
 
-    return train_dataset, test_dataset, data_mode
+    return train_dataset, test_dataset
 
 class InfiniteDataLoader:
     """
@@ -719,6 +762,7 @@ if __name__ == '__main__':
     # system/input/output
     parser.add_argument('--input-file', '-i', type=str, default='names.txt', help="input text file, where .txt suffix => one word per line to make more of, while .tsv => <answer><tab><prompt> each line (e.g., ListOps data)")
     parser.add_argument('--work-dir', '-o', type=str, default='out', help="output working directory")
+    parser.add_argument('--data-mode', type=str, default="words", help="data type: (words|qa|distance)")
     parser.add_argument('--resume', action='store_true', help="when this flag is used, we will resume optimization from existing model in the workdir")
     parser.add_argument('--sample-only', action='store_true', help="just sample from the model and quit, don't train")
     parser.add_argument('--num-workers', '-n', type=int, default=4, help="number of data workers for both train/test")
@@ -746,8 +790,22 @@ if __name__ == '__main__':
     os.makedirs(args.work_dir, exist_ok=True)
     writer = SummaryWriter(log_dir=args.work_dir)
 
+    def str2dm(s):
+        if s == "words":
+            dm = DataMode.WORDS
+        elif s == "qa":
+            dm = DataMode.QA
+        elif s == "distance":
+            dm = DataMode.DISTANCE
+        else:
+            assert False, f"Unrecognized --data-mode {s}"
+        return dm
+
+    data_mode = str2dm(args.data_mode)
+    print(f"dataset determined that: {data_mode=}")
+
     # init datasets
-    train_dataset, test_dataset, data_mode = create_datasets(args.input_file)
+    train_dataset, test_dataset = create_datasets(args.input_file, data_mode)
     vocab_size = train_dataset.get_vocab_size()
     block_size = train_dataset.get_output_length()
     print(f"dataset determined that: {vocab_size=}, {block_size=}")
@@ -755,7 +813,7 @@ if __name__ == '__main__':
     # init model
     config = ModelConfig(vocab_size=vocab_size, block_size=block_size,
                          n_layer=args.n_layer, n_head=args.n_head,
-                         n_embd=args.n_embd, n_embd2=args.n_embd2, data_mode_QA=(data_mode=='QA'))
+                         n_embd=args.n_embd, n_embd2=args.n_embd2, data_mode=data_mode)
 
     mambaConfig = mm.ModelArgs(
         d_model=args.n_embd,
@@ -850,7 +908,7 @@ if __name__ == '__main__':
 
         # sample from the model
         if step > 0 and step % 200 == 0:
-            print_samples(num=10)
+            print_samples(10)
 
         step += 1
         # termination conditions

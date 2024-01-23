@@ -5,23 +5,17 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Python: Current File",
-            "type": "python",
-            "request": "launch",
-            "program": "${file}",
-            "console": "integratedTerminal",
-            "justMyCode": false
-        },
-        {
             "name": "Python: Launch with Arguments",
             "type": "python",
             "request": "launch",
             "program": "${workspaceFolder}/makemore.py", // Path to your Python script
             "args": [
                 "--type",
-                "gru",
+                "transformer", // was "gru",
+                "--input",
+                "data/words.txt", // ./data/ListOps/train_d8.tsv
                 "--max-steps",
-                "200"
+                "500"
             ], // Command line arguments
             "console": "integratedTerminal", // Or "externalTerminal"
             "cwd": "${workspaceFolder}", // Current working directory
@@ -30,6 +24,6 @@
             "stopOnEntry": false,
             "justMyCode": false,
             "showReturnValue": true
-        }
+        } 
     ]
 }
