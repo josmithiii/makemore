@@ -166,8 +166,8 @@ class Transformer(nn.Module):
         # if we are given some desired targets also calculate the loss
         loss = None
         if targets is not None:
-            print(f"Given {len(idx)} in idx: {idx=}\n")
-            print(f"have {len(targets)} targets: {targets=}\n")
+            print(f"Given {len(idx)} in idx: {idx.transpose(0,1)=}\n")
+            print(f"have {len(targets)} targets: {targets.transpose(0,1)=}\n")
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
 
         return logits, loss
@@ -514,9 +514,11 @@ def print_samples(num=10):
     print('-'*80)
 
 @torch.inference_mode()
-def evaluate(model, dataset, batch_size=50, max_batches=None):
+def evaluate(model, dataset, data_mode, batch_size=50, max_batches=None):
     model.eval()
-    loader = DataLoader(dataset, shuffle=True, batch_size=batch_size, num_workers=0)
+    doShuffle = data_mode != DataMode.distance
+    loader = DataLoader(dataset, shuffle=doShuffle, batch_size=batch_size, num_workers=0)
+    loader = DataLoader(dataset, shuffle=doShuffle, batch_size=batch_size, num_workers=0)
     losses = []
     for i, batch in enumerate(loader):
         batch = [t.to(args.device) for t in batch]
@@ -539,8 +541,20 @@ class CharDataset(Dataset):
         self.words = words     # List of strings: names (WORDS) | ListOps examples (QA) | ints (DISTANCE)
         if mode == DataMode.DISTANCE:
             self.ints = [int(w) for w in words]
+            nints = len(self.ints)
             print(f"ints = {self.ints}\n")
-            self.lastOccurrence = {value: index for index, value in enumerate(self.ints)} # dictionary mapping each int to its last occurrence (index)
+            # self.lastOccurrence = {value: index for index, value in enumerate(self.ints)} # dictionary mapping each int to its last occurrence (index)
+            self.lastOccurrence = [0] * nints
+            for i in range(nints):
+                if i==0:
+                    continue
+                itm = self.ints[i]
+                for ir in reversed(range(i-1)):
+                    if self.ints[ir]==itm:
+                        dist = i-ir
+                        self.lastOccurrence[i] = dist
+                        # print(f"lastOccurrence[{i}] of {itm} is {dist} samples ago at index {ir}")
+                        break
             print(f"lastOccurrence = {self.lastOccurrence}\n")
         self.chars = chars     # Set of all chars used in words
         self.max_word_length = max_word_length
@@ -598,11 +612,11 @@ class CharDataset(Dataset):
                 stlo = idx - ixi
                 iolo = ixi
                 break
-        print(f"Last occurrence of ix = {ix} from index {idx} is at index {iolo} which is {stlo} samples earlier\n")
+        # print(f"Last occurrence of ix = {ix} from index {idx} is at index {iolo} which is {stlo} samples earlier\n")
         return stlo
 
     def __getitem__(self, idx): # CharDataset.__getitem__: idx is an int addressing one word in words:
-        print (f"__getitem__: idx = {idx}, word == {self.words[idx]}, data_mode = {self.data_mode}\n")
+        # print (f"__getitem__: idx = {idx}, word == {self.words[idx]}, data_mode = {self.data_mode}")
         if self.data_mode == DataMode.WORDS:
             word = self.words[idx].strip()
             assert word[0] != '|', f"ListOps input format not support by data-mode WORDS"
@@ -730,7 +744,10 @@ def create_datasets(input_file, data_mode):
 
     # partition the input data into a training and the test set
     test_set_size = min(1000, int(len(words) * 0.1)) # 10% of the training set, or up to 1000 examples
-    rp = torch.randperm(len(words)).tolist()
+    if data_mode != DataMode.DISTANCE:
+        rp = torch.randperm(len(words)).tolist()
+    else:
+        rp = range(len(words)) # we cannot permute this memory task
     train_words = [words[i] for i in rp[:-test_set_size]]
     test_words = [words[i] for i in rp[-test_set_size:]]
     print(f"split up the dataset into {len(train_words)} training examples and {len(test_words)} test examples")
@@ -904,8 +921,8 @@ if __name__ == '__main__':
 
         # evaluate the model
         if step > 0 and step % 500 == 0:
-            train_loss = evaluate(model, train_dataset, batch_size=100, max_batches=10)
-            test_loss  = evaluate(model, test_dataset,  batch_size=100, max_batches=10)
+            train_loss = evaluate(model, data_mode, train_dataset, batch_size=100, max_batches=10)
+            test_loss  = evaluate(model, data_mode, test_dataset,  batch_size=100, max_batches=10)
             writer.add_scalar("Loss/train", train_loss, step)
             writer.add_scalar("Loss/test", test_loss, step)
             writer.flush()
