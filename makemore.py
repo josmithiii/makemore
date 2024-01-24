@@ -37,6 +37,7 @@ import mambaminimal as mm # mamba-minimal.py
 
 from enum import Enum
 import cProfile
+import random
 
 # -----------------------------------------------------------------------------
 
@@ -166,8 +167,8 @@ class Transformer(nn.Module):
         # if we are given some desired targets also calculate the loss
         loss = None
         if targets is not None:
-            print(f"Given {len(idx)} in idx: {idx.transpose(0,1)=}\n")
-            print(f"have {len(targets)} targets: {targets.transpose(0,1)=}\n")
+            # print(f"Given {len(idx)} in idx: {idx.transpose(0,1)=}\n")
+            # print(f"have {len(targets)} targets: {targets.transpose(0,1)=}\n")
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
 
         return logits, loss
@@ -542,7 +543,7 @@ class CharDataset(Dataset):
         if mode == DataMode.DISTANCE:
             self.ints = [int(w) for w in words]
             nints = len(self.ints)
-            print(f"ints = {self.ints}\n")
+            # print(f"ints = {self.ints}\n")
             # self.lastOccurrence = {value: index for index, value in enumerate(self.ints)} # dictionary mapping each int to its last occurrence (index)
             self.lastOccurrence = [0] * nints
             for i in range(nints):
@@ -555,7 +556,7 @@ class CharDataset(Dataset):
                         self.lastOccurrence[i] = dist
                         # print(f"lastOccurrence[{i}] of {itm} is {dist} samples ago at index {ir}")
                         break
-            print(f"lastOccurrence = {self.lastOccurrence}\n")
+            # print(f"lastOccurrence = {self.lastOccurrence}\n")
         self.chars = chars     # Set of all chars used in words
         self.max_word_length = max_word_length
         self.stoi = {ch:i+1 for i,ch in enumerate(chars)} # +1 to reserve 0 for padding char
@@ -696,10 +697,17 @@ def create_datasets(input_file, data_mode):
         max_word_length = max(len(w) for w in words)
     elif data_mode == DataMode.DISTANCE: # distance ints
         assert ext == '.txt', "DataMode.DISTANCE requires .txt input format"
-        ints = [int(w) for w in words]
+        if input_file == 'names.txt': # original makemore default
+            print(f"Generating DISTANCE data since no input file-name specified")
+            numExamples = 32033 # same as original names.txt why not
+            numInts = 27 # same as original vocab_size in names.txt
+            ints = [random.randint(0, numInts-1) for _ in range(numExamples)]
+            words = [str(i) for i in ints] # FIXME: should not need this - revise data structures
+        else:
+            ints = [int(w) for w in words]
         max_int = max(ints)
         max_word_length = 1 # map from int to int = samples to last occurrence of that int
-        print(f"DISTANCE data_mode:\n\twords = {words}\n\tints = {ints}\n\tmax_int = {max_int}\n")
+        # print(f"DISTANCE data_mode:\n\twords = {words}\n\tints = {ints}\n\tmax_int = {max_int}\n")
     elif data_mode == DataMode.QA: # ListOps case [added to makemore]
         assert ext == '.tsv', "DataMode.QA requires .tsv input format"
         lines = words # Each line is a complete ListOps example in the format "|solution|problem"
