@@ -486,14 +486,30 @@ def generate(model, idx, max_new_tokens, temperature=1.0, do_sample=False, top_k
 
     return idx
 
+@torch.no_grad()
+def generate_map(model, idx):
+    """
+    Take an input sequence of indices idx (LongTensor of shape (b,t)) and generate
+    the corresponding output sequence for DataMode.DISTANCE.
+    """
+    block_size = model.get_block_size()
+    logits, _ = model(idx)
+    return logits
+
 def print_samples(num=10):
     """ samples from the model and pretty prints the decoded samples """
     X_init = torch.zeros(num, 1, dtype=torch.long).to(args.device)
-    if data_mode == DataMode.WORDS:
-        X_init = torch.zeros(num, 1, dtype=torch.long).to(args.device)
+    print(f"print_samples: {data_mode=}")
+    if data_mode == DataMode.DISTANCE:
+        for k in range(num):
+            X_init = torch.tensor([random.randint(0, num/2) for _ in range(num)]).expand(1,num)
+            X_samp = generate_map(model, X_init).to('cpu')
+            print(f"X_samp[{k}] = {X_samp=}")
+        return
     elif data_mode == DataMode.QA:
-        X_init = torch.zeros(num, 1, dtype=torch.long).to(args.device)
-    elif data_mode == DataMode.DISTANCE:
+        print(f"print_samples: Write model samples for QA case")
+        return
+    elif data_mode == DataMode.WORDS:
         X_init = torch.zeros(num, 1, dtype=torch.long).to(args.device)
     else:
         assert False, f"Unrecognized data mode {data_mode=}"
@@ -586,7 +602,9 @@ class CharDataset(Dataset):
 
     def get_vocab_size(self):
         if self.data_mode == DataMode.DISTANCE:
-            return max(self.lastOccurrence)
+            vocab_size = max(self.lastOccurrence) + 1
+            print(f"CharDataset: {vocab_size=}")
+            return vocab_size
         else:
             return len(self.chars) + 1 # all the possible characters and special 0 token
 
@@ -863,7 +881,7 @@ if __name__ == '__main__':
     vocab_size = train_dataset.get_vocab_size()
     block_size = args.block_size
     min_block_size = train_dataset.get_output_length()
-    print(f"dataset determined that: {vocab_size=}, {min_block_size=}")
+    print(f"+++ dataset determined that: {vocab_size=}, {min_block_size=}")
     if block_size < min_block_size:
         print(f"increasing {block_size=} to {min_block_size=}\n")
         block_size = min_block_size
