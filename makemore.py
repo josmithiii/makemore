@@ -45,8 +45,8 @@ DataMode = Enum('DataMode', ['WORDS', 'QA', 'DISTANCE'])
 
 @dataclass
 class ModelConfig:
-    block_size: int = 16 # length of the input sequences of integers, originally max_word_length+1
-    vocab_size: int = None # number of output logits - input integers are in range [0 .. vocab_size -1]
+    block_size: int = 16 # length of the input sequences of integers, originally max_word_length+1 == max chars/word + <start>
+    vocab_size: int = None # number of output logits - input integers are in the range [0 .. vocab_size -1]
     # parameters below control the sizes of each model slightly differently
     n_layer: int = 4
     n_embd: int = 64  # input embedding
@@ -156,6 +156,7 @@ class Transformer(nn.Module):
         pos = torch.arange(0, t, dtype=torch.long, device=device).unsqueeze(0) # shape (1, t)
 
         # forward the GPT model itself
+        print(f"Transformer: idx for wte embedding =\n{idx.transpose(0,1)=}")
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (1, t, n_embd)
         x = tok_emb + pos_emb
@@ -167,8 +168,9 @@ class Transformer(nn.Module):
         # if we are given some desired targets also calculate the loss
         loss = None
         if targets is not None:
-            # print(f"Given {len(idx)} in idx: {idx.transpose(0,1)=}\n")
-            # print(f"have {len(targets)} targets: {targets.transpose(0,1)=}\n")
+            # print(f"Transformer: Given {len(idx)} in idx: {idx.transpose(0,1)=}")
+            # print(f"\thave {len(targets)} targets: {targets.transpose(0,1)=}")
+            assert idx.shape == targets.shape, f"Transformer: {idx.shape=} != {targets.shape=}"
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
 
         return logits, loss
@@ -343,6 +345,9 @@ class RNN(nn.Module):
         # print(f"idx == {idx}\n")
         # pdb.set_trace()
 
+        print(f"RNN: idx shape is {idx.shape}")
+        # Not true for last block: assert t == self.block_size, f"RNN: {t=} != {self.block_size=}"
+
         # embed all the integers up front and all at once for efficiency
         emb = self.wte(idx) # (b, t, n_embd)
 
@@ -362,8 +367,9 @@ class RNN(nn.Module):
         # if we are given some desired targets also calculate the loss
         loss = None
         if targets is not None:
-            print(f"Given {len(idx)} in idx: {idx.transpose(0,1)=}\n")
-            print(f"have {len(targets)} targets: {targets.transpose(0,1)=}\n")
+            print(f"RNN: Given {len(idx)} in idx: {idx.transpose(0,1)=}")
+            print(f"\thave {len(targets)} targets: {targets.transpose(0,1)=}")
+            assert idx.shape == targets.shape, f"RNN: {idx.shape=} != {targets.shape=}"
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
 
         return logits, loss
@@ -519,13 +525,14 @@ def print_samples(num=10):
 @torch.inference_mode()
 def evaluate(model, dataset, data_mode, batch_size=50, max_batches=None):
     model.eval()
-    doShuffle = data_mode != DataMode.distance
+    doShuffle = data_mode != DataMode.DISTANCE
     loader = DataLoader(dataset, shuffle=doShuffle, batch_size=batch_size, num_workers=0)
     loader = DataLoader(dataset, shuffle=doShuffle, batch_size=batch_size, num_workers=0)
     losses = []
     for i, batch in enumerate(loader):
         batch = [t.to(args.device) for t in batch]
         X, Y = batch
+        print(f"evaluate: {X.shape=}\n{Y.shape=}")
         logits, loss = model(X, Y)
         losses.append(loss.item())
         if max_batches is not None and i >= max_batches:
@@ -556,13 +563,17 @@ class CharDataset(Dataset):
                 for ir in reversed(range(i-1)):
                     if self.ints[ir]==itm:
                         dist = i-ir
+                        if dist >= max_word_length:
+                            dist = max_word_length-1
+                            self.ints[i-dist] = itm # just whack it to be true
                         self.lastOccurrence[i] = dist
                         # print(f"lastOccurrence[{i}] of {itm} is {dist} samples ago at index {ir}")
                         break
             # print(f"lastOccurrence = {self.lastOccurrence}\n")
             print(f"maximum lastOccurrence for {nints} ints = {max(self.lastOccurrence)}")
         self.chars = chars     # Set of all chars used in words
-        self.max_word_length = max_word_length
+        # self.max_word_length = 1 # when output is an int
+        self.max_word_length = max_word_length # number of logits out
         self.stoi = {ch:i+1 for i,ch in enumerate(chars)} # +1 to reserve 0 for padding char
         self.itos = {i:s for s,i in self.stoi.items()} # inverse mapping
         self.unknown_index = -1
@@ -581,7 +592,8 @@ class CharDataset(Dataset):
 
     def get_output_length(self):
         if self.data_mode == DataMode.DISTANCE:
-            return 1 # int maps to int
+            # return 1 # int output
+            return self.max_word_length # logits output
         else:
             return self.max_word_length + 1 # <START> token followed by words
 
@@ -612,16 +624,16 @@ class CharDataset(Dataset):
         word = ''.join(self.itos[i] for i in ix)
         return word
 
-    def samplesToLastOccurrence(self, ix, idx):
-        stlo = 0
-        iolo = 0
-        for ixi in reversed(range(idx-1)):
-            if ix == self.ints[ixi]:
-                stlo = idx - ixi
-                iolo = ixi
-                break
-        # print(f"Last occurrence of ix = {ix} from index {idx} is at index {iolo} which is {stlo} samples earlier\n")
-        return stlo
+    # def samplesToLastOccurrence(self, ix, idx):
+    #     stlo = 0
+    #     iolo = 0
+    #     for ixi in reversed(range(idx-1)):
+    #         if ix == self.ints[ixi]:
+    #             stlo = idx - ixi
+    #             iolo = ixi
+    #             break
+    #     # print(f"Last occurrence of ix = {ix} from index {idx} is at index {iolo} which is {stlo} samples earlier\n")
+    #     return stlo
 
     def __getitem__(self, idx): # CharDataset.__getitem__: idx is an int addressing one word in words:
         # print (f"__getitem__: idx = {idx}, word == {self.words[idx]}, data_mode = {self.data_mode}")
@@ -636,7 +648,8 @@ class CharDataset(Dataset):
             y[len(ix)+1:] = -1 # index -1 will mask the loss at the inactive locations
         elif self.data_mode == DataMode.DISTANCE: # randomly ordered ints
             ix = self.ints[idx]
-            iy = self.samplesToLastOccurrence(ix,idx)
+            #iy = self.samplesToLastOccurrence(ix,idx)
+            iy = self.lastOccurrence[idx]
             x = torch.zeros(1, dtype=torch.long)
             y = torch.zeros(1, dtype=torch.long)
             x[0] = ix
@@ -683,7 +696,7 @@ class CharDataset(Dataset):
 
         return x, y
 
-def create_datasets(input_file, data_mode):
+def create_datasets(input_file, data_mode, block_size):
 
     # print("=== AT DATA LOADING BREAKPOINT ===")
     # pdb.set_trace()
@@ -705,7 +718,7 @@ def create_datasets(input_file, data_mode):
     elif data_mode == DataMode.DISTANCE: # distance ints
         assert ext == '.txt', "DataMode.DISTANCE requires .txt input format"
         if input_file == 'names.txt': # original makemore default
-            print(f"Generating DISTANCE data since no input file-name specified")
+            print(f"Generating DISTANCE DATA AUTOMATICALLY since no input file-name specified")
             numExamples = 32033 # same as original names.txt why not
             numInts = 27 # same as original vocab_size in names.txt
             ints = [random.randint(0, numInts-1) for _ in range(numExamples)]
@@ -713,7 +726,7 @@ def create_datasets(input_file, data_mode):
         else:
             ints = [int(w) for w in words]
         max_int = max(ints)
-        max_word_length = 1 # instead of words we have ints
+        max_word_length = block_size # number of samples delay supported
         # print(f"DISTANCE data_mode:\n\twords = {words}\n\tints = {ints}\n\tmax_int = {max_int}\n")
     elif data_mode == DataMode.QA: # ListOps case [added to makemore]
         assert ext == '.tsv', "DataMode.QA requires .tsv input format"
@@ -757,12 +770,14 @@ def create_datasets(input_file, data_mode):
     print("vocabulary:")
     print(''.join(chars))
 
-    # partition the input data into a training and the test set
-    test_set_size = min(1000, int(len(words) * 0.1)) # 10% of the training set, or up to 1000 examples
+    # create_datasets: partition the input data into a training and the test set
+    nWords = len(words)
+    test_set_size = max(block_size, int(nWords * 0.1)) # 10% of the training set, or up to 1000 examples
+    assert nWords > 2*test_set_size, f"Only {nWords} words of data for {block_size=}"
     if data_mode != DataMode.DISTANCE:
         rp = torch.randperm(len(words)).tolist()
     else:
-        rp = range(len(words)) # we cannot permute this memory task
+        rp = range(len(words)) # cannot permute this memory task
     train_words = [words[i] for i in rp[:-test_set_size]]
     test_words = [words[i] for i in rp[-test_set_size:]]
     print(f"split up the dataset into {len(train_words)} training examples and {len(test_words)} test examples")
@@ -844,11 +859,11 @@ if __name__ == '__main__':
     print(f"dataset determined that: {data_mode=}")
 
     # init datasets
-    train_dataset, test_dataset = create_datasets(args.input_file, data_mode)
+    train_dataset, test_dataset = create_datasets(args.input_file, data_mode, args.block_size)
     vocab_size = train_dataset.get_vocab_size()
     block_size = args.block_size
     min_block_size = train_dataset.get_output_length()
-    print(f"dataset determined that: {vocab_size=}, {min_block_size=}\n")
+    print(f"dataset determined that: {vocab_size=}, {min_block_size=}")
     if block_size < min_block_size:
         print(f"increasing {block_size=} to {min_block_size=}\n")
         block_size = min_block_size
@@ -917,6 +932,8 @@ if __name__ == '__main__':
         batch = [t.to(args.device) for t in batch]
         X, Y = batch
 
+        # print(f"{X.shape=}, {Y.shape=}")
+        assert X.shape == Y.shape, f"{X.shape=} != {Y.shape=}"
         # feed into the model
         logits, loss = model(X, Y)
 
@@ -936,8 +953,8 @@ if __name__ == '__main__':
 
         # evaluate the model
         if step > 0 and step % 500 == 0:
-            train_loss = evaluate(model, data_mode, train_dataset, batch_size=100, max_batches=10)
-            test_loss  = evaluate(model, data_mode, test_dataset,  batch_size=100, max_batches=10)
+            train_loss = evaluate(model, train_dataset, data_mode, batch_size=args.batch_size, max_batches=10)
+            test_loss  = evaluate(model, test_dataset, data_mode, batch_size=args.batch_size, max_batches=10)
             writer.add_scalar("Loss/train", train_loss, step)
             writer.add_scalar("Loss/test", test_loss, step)
             writer.flush()
