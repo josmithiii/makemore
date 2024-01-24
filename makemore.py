@@ -345,7 +345,7 @@ class RNN(nn.Module):
         # print(f"idx == {idx}\n")
         # pdb.set_trace()
 
-        print(f"RNN: idx shape is {idx.shape}")
+        # print(f"RNN: idx shape is {idx.shape}")
         # Not true for last block: assert t == self.block_size, f"RNN: {t=} != {self.block_size=}"
 
         # embed all the integers up front and all at once for efficiency
@@ -367,8 +367,9 @@ class RNN(nn.Module):
         # if we are given some desired targets also calculate the loss
         loss = None
         if targets is not None:
-            print(f"RNN: Given {len(idx)} in idx: {idx.transpose(0,1)=}")
-            print(f"\thave {len(targets)} targets: {targets.transpose(0,1)=}")
+            # Not very interesting since RNNs must be called one sample at a time
+            # print(f"RNN: Given {len(idx)} in idx: {idx.transpose(0,1)=}")
+            # print(f"\thave {len(targets)} targets: {targets.transpose(0,1)=}")
             assert idx.shape == targets.shape, f"RNN: {idx.shape=} != {targets.shape=}"
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
 
@@ -500,17 +501,42 @@ def print_samples(num=10):
     """ samples from the model and pretty prints the decoded samples """
     X_init = torch.zeros(num, 1, dtype=torch.long).to(args.device)
     print(f"print_samples: {data_mode=}")
+    random.seed(42)
     if data_mode == DataMode.DISTANCE:
-        for k in range(num):
-            X_init = torch.tensor([random.randint(0, num/2) for _ in range(num)]).expand(1,num)
+        nBlocks = 1 + num // block_size
+        for k in range(nBlocks):
+            X_init = torch.tensor([random.randint(0, num/2) for _ in range(num)]).expand(1,num) # num/2 to get some repeats
             X_samp = generate_map(model, X_init).to('cpu')
-            print(f"X_samp[{k}] = {X_samp=}")
+            print(f"X_init.shape: {X_init.shape=}")
+            print(f"X_init[{k}] =\n\t{X_init=}")
+            X_true, _ = lastOccurrenceDistance(torch.flatten(X_init).tolist(), block_size)
+            print(f"X_true =\n\t{X_true=}")
+            print(f"X_samp.shape: {X_samp.shape=}")
+            max_values, max_indices = torch.max(X_samp, dim=1)
+            print(f"X_samp max indices:\n\t{max_indices=}")
+            steps = train_dataset.get_output_length() - 1 # -1 because we already start with <START> token (index 0)
+            X_samp = generate(model, X_init, steps, do_sample=True).to('cpu')
+            distances = []
+            for i in range(X_samp.size(0)):
+                # get the i'th row of sampled integers, as python list
+                row = X_samp[i, 1:].tolist() # note: we need to crop out the first <START> token
+                # token 0 is the <STOP> token, so we crop the output sequence at that point
+                crop_index = row.index(0) if 0 in row else len(row)
+                row = row[:crop_index]
+                dist_samp = train_dataset.max_index(row)
+                distances.append(dist_samp)
+            print('-'*80)
+            print(f"{len(distances)} distances:")
+            for dist in distances:
+                print(dist)
+            print('-'*80)
         return
     elif data_mode == DataMode.QA:
         print(f"print_samples: Write model samples for QA case")
         return
     elif data_mode == DataMode.WORDS:
         X_init = torch.zeros(num, 1, dtype=torch.long).to(args.device)
+        # processing below:
     else:
         assert False, f"Unrecognized data mode {data_mode=}"
     top_k = args.top_k if args.top_k != -1 else None
@@ -560,6 +586,70 @@ def evaluate(model, dataset, data_mode, batch_size=50, max_batches=None):
 # -----------------------------------------------------------------------------
 # helper functions for creating the training and test Datasets that emit words
 
+# ChatGPT-4T:
+def lastOccurrenceDistance3(ints, max_distance):
+    # # Example usage
+    # ints = [1, 2, 3, 2, 4, 1, 2, 3, 4, 2]
+    # max_distance = 5
+    # distances = lastOccurrenceDistance(ints, max_distance)
+    # print("Distances:", distances)
+    nints = len(ints)
+    print(f"lastOccurrenceDistance: Received {nints} ints:\n{ints=}")
+    lastOccurrence = [0] * nints  # Initialize distances with 0
+    lastSeen = {}  # Dictionary to track the last seen index of each item
+
+    for i, itm in enumerate(ints):
+        if itm in lastSeen:
+            # Calculate distance from the last occurrence, capped at max_distance - 1
+            dist = min(i - lastSeen[itm], max_distance - 1)
+            lastOccurrence[i] = dist
+        # Update the last seen index for the current item
+        lastSeen[itm] = i
+
+    print(f"lastOccurrenceDistance: Returning {len(lastOccurrence)} distances:\n{lastOccurrence=}")
+    return lastOccurrence
+
+# ChatGPT-4T:
+def lastOccurrenceDistance2(ints, max_distance):
+    nints = len(ints)
+    print(f"lastOccurrenceDistance: Received {nints} ints:\n{ints=}")
+    lastOccurrence = [0] * nints
+    for i in range(nints):
+        if i == 0:
+            continue
+        itm = ints[i]
+        for ir in reversed(range(i)):
+            if ints[ir] == itm:
+                dist = i - ir
+                if dist >= max_distance:
+                    dist = max_distance - 1
+                lastOccurrence[i] = dist
+                # print(f"lastOccurrence[{i}] of {itm} is {dist} samples ago at index {ir}")
+                break
+    print(f"lastOccurrenceDistance: Returning {len(lastOccurrence)} distances:\n{lastOccurrence=}")
+    return lastOccurrence, ints
+
+def lastOccurrenceDistance(ints, max_distance):
+    nints = len(ints)
+    print(f"lastOccurrenceDistance: Received {nints} ints:\n{ints=}")
+    lastOccurrence = [0] * nints
+    for i in range(nints):
+        if i == 0:
+            continue
+        itm = ints[i]
+        for ir in reversed(range(i)):
+            if ints[ir] == itm:
+                dist = i - ir
+                if dist >= max_distance:
+                    dist = max_distance - 1
+                    ints[i-dist] = itm # just whack it to be true
+                lastOccurrence[i] = dist
+                # print(f"lastOccurrence[{i}] of {itm} is {dist} samples ago at index {ir}")
+                break
+    print(f"lastOccurrenceDistance: Returning {len(lastOccurrence)} distances:\n{lastOccurrence=}")
+    return lastOccurrence, ints
+
+
 class CharDataset(Dataset):
 
     def __init__(self, mode, words, chars, max_word_length):
@@ -567,26 +657,12 @@ class CharDataset(Dataset):
         self.words = words     # List of strings: names (WORDS) | ListOps examples (QA) | ints (DISTANCE)
         if mode == DataMode.DISTANCE:
             self.ints = [int(w) for w in words]
-            nints = len(self.ints)
             # print(f"ints = {self.ints}\n")
             # self.lastOccurrence = {value: index for index, value in enumerate(self.ints)}
             #  == dictionary mapping each int to its last occurrence (index)
-            self.lastOccurrence = [0] * nints
-            for i in range(nints):
-                if i==0:
-                    continue
-                itm = self.ints[i]
-                for ir in reversed(range(i-1)):
-                    if self.ints[ir]==itm:
-                        dist = i-ir
-                        if dist >= max_word_length:
-                            dist = max_word_length-1
-                            self.ints[i-dist] = itm # just whack it to be true
-                        self.lastOccurrence[i] = dist
-                        # print(f"lastOccurrence[{i}] of {itm} is {dist} samples ago at index {ir}")
-                        break
+            self.lastOccurrence, self.ints = lastOccurrenceDistance(self.ints, max_word_length)
             # print(f"lastOccurrence = {self.lastOccurrence}\n")
-            print(f"maximum lastOccurrence for {nints} ints = {max(self.lastOccurrence)}")
+            print(f"maximum lastOccurrence for {len(self.ints)} ints = {max(self.lastOccurrence)}")
         self.chars = chars     # Set of all chars used in words
         # self.max_word_length = 1 # when output is an int
         self.max_word_length = max_word_length # number of logits out
@@ -641,6 +717,14 @@ class CharDataset(Dataset):
     def decode(self, ix):
         word = ''.join(self.itos[i] for i in ix)
         return word
+
+    def max_index(self, ix):
+        print(f"max_index: {ix=}")
+        if len(ix)>0:
+            max_index, max_value = max(enumerate(ix), key=lambda pair: pair[1])
+            return max_index
+        else:
+            return -1
 
     # def samplesToLastOccurrence(self, ix, idx):
     #     stlo = 0
@@ -737,10 +821,15 @@ def create_datasets(input_file, data_mode, block_size):
         assert ext == '.txt', "DataMode.DISTANCE requires .txt input format"
         if input_file == 'names.txt': # original makemore default
             print(f"Generating DISTANCE DATA AUTOMATICALLY since no input file-name specified")
-            numExamples = 32033 # same as original names.txt why not
+
+            # numExamples = 32033 # same as original names.txt why not
+            print(f"*** USING FOUR-BLOCK DATA SET FOR TESTING ***")
+            numExamples = 4*block_size
+
             numInts = 27 # same as original vocab_size in names.txt
             ints = [random.randint(0, numInts-1) for _ in range(numExamples)]
             words = [str(i) for i in ints] # FIXME: should not need this - revise data structures
+            chars = sorted(list(set(''.join(words)))) # gross - not used - just to eliminate misleading printouts
         else:
             ints = [int(w) for w in words]
         max_int = max(ints)
@@ -783,10 +872,9 @@ def create_datasets(input_file, data_mode, block_size):
 
 
     print(f"number of examples in the dataset: {len(words)}")
-    print(f"max word length: {max_word_length}")
+    print(f"max word length or block size: {max_word_length}")
     print(f"number of unique characters in the vocabulary: {len(chars)}")
-    print("vocabulary:")
-    print(''.join(chars))
+    print(f"vocabulary: {''.join(chars)}")
 
     # create_datasets: partition the input data into a training and the test set
     nWords = len(words)
@@ -885,6 +973,8 @@ if __name__ == '__main__':
     if block_size < min_block_size:
         print(f"increasing {block_size=} to {min_block_size=}\n")
         block_size = min_block_size
+
+    print(f"test_dataset: {test_dataset=}")
 
     # init model - FIXME: For DataMode.DISTANCE, output an unsigned int instead of (too many) logits
     config = ModelConfig(vocab_size=vocab_size, block_size=block_size,
