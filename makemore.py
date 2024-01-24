@@ -46,7 +46,7 @@ DataMode = Enum('DataMode', ['WORDS', 'QA', 'DISTANCE'])
 @dataclass
 class ModelConfig:
     block_size: int = 16 # length of the input sequences of integers, originally max_word_length+1
-    vocab_size: int = None # the input integers are in range [0 .. vocab_size -1]
+    vocab_size: int = None # number of output logits - input integers are in range [0 .. vocab_size -1]
     # parameters below control the sizes of each model slightly differently
     n_layer: int = 4
     n_embd: int = 64  # input embedding
@@ -362,6 +362,8 @@ class RNN(nn.Module):
         # if we are given some desired targets also calculate the loss
         loss = None
         if targets is not None:
+            print(f"Given {len(idx)} in idx: {idx.transpose(0,1)=}\n")
+            print(f"have {len(targets)} targets: {targets.transpose(0,1)=}\n")
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
 
         return logits, loss
@@ -544,7 +546,8 @@ class CharDataset(Dataset):
             self.ints = [int(w) for w in words]
             nints = len(self.ints)
             # print(f"ints = {self.ints}\n")
-            # self.lastOccurrence = {value: index for index, value in enumerate(self.ints)} # dictionary mapping each int to its last occurrence (index)
+            # self.lastOccurrence = {value: index for index, value in enumerate(self.ints)}
+            #  == dictionary mapping each int to its last occurrence (index)
             self.lastOccurrence = [0] * nints
             for i in range(nints):
                 if i==0:
@@ -557,6 +560,7 @@ class CharDataset(Dataset):
                         # print(f"lastOccurrence[{i}] of {itm} is {dist} samples ago at index {ir}")
                         break
             # print(f"lastOccurrence = {self.lastOccurrence}\n")
+            print(f"maximum lastOccurrence for {nints} ints = {max(self.lastOccurrence)}")
         self.chars = chars     # Set of all chars used in words
         self.max_word_length = max_word_length
         self.stoi = {ch:i+1 for i,ch in enumerate(chars)} # +1 to reserve 0 for padding char
@@ -570,7 +574,10 @@ class CharDataset(Dataset):
         return word in self.words
 
     def get_vocab_size(self):
-        return len(self.chars) + 1 # all the possible characters and special 0 token
+        if self.data_mode == DataMode.DISTANCE:
+            return max(self.lastOccurrence)
+        else:
+            return len(self.chars) + 1 # all the possible characters and special 0 token
 
     def get_output_length(self):
         if self.data_mode == DataMode.DISTANCE:
@@ -706,7 +713,7 @@ def create_datasets(input_file, data_mode):
         else:
             ints = [int(w) for w in words]
         max_int = max(ints)
-        max_word_length = 1 # map from int to int = samples to last occurrence of that int
+        max_word_length = 1 # instead of words we have ints
         # print(f"DISTANCE data_mode:\n\twords = {words}\n\tints = {ints}\n\tmax_int = {max_int}\n")
     elif data_mode == DataMode.QA: # ListOps case [added to makemore]
         assert ext == '.tsv', "DataMode.QA requires .tsv input format"
@@ -834,7 +841,7 @@ if __name__ == '__main__':
         return dm
 
     data_mode = str2dm(args.data_mode)
-    print(f"dataset determined that: {data_mode=}\n")
+    print(f"dataset determined that: {data_mode=}")
 
     # init datasets
     train_dataset, test_dataset = create_datasets(args.input_file, data_mode)
@@ -846,7 +853,7 @@ if __name__ == '__main__':
         print(f"increasing {block_size=} to {min_block_size=}\n")
         block_size = min_block_size
 
-    # init model
+    # init model - FIXME: For DataMode.DISTANCE, output an unsigned int instead of (too many) logits
     config = ModelConfig(vocab_size=vocab_size, block_size=block_size,
                          n_layer=args.n_layer, n_head=args.n_head,
                          n_embd=args.n_embd, n_embd2=args.n_embd2, data_mode=data_mode)
