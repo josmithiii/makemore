@@ -61,6 +61,8 @@ class ModelConfig:
     # extension of makemore to new types of data (beyond just words to make more of)
     data_mode: DataMode = DataMode.WORDS # data modes are WORDS (original), QA (Question/Answer), and DISTANCE
     block_size: int = 16 # input sequence length, originally max_word_length+1 == max chars/word + <start>
+    output_size: int = 128 # number of output logits == number of chars for WORDS, desired memory length for QA or DISTANCE
+
     # block_size is important for Transformer and any model that works only on one input buffer at a time
     # (no recurrence).
 
@@ -517,7 +519,7 @@ def print_samples(num=10):
             print(f"X_samp.shape: {X_samp.shape=}")
             max_values, max_indices = torch.max(X_samp, dim=1)
             print(f"X_samp max indices:\n\t{max_indices=}")
-            steps = train_dataset.get_output_length() - 1 # -1 because we already start with <START> token (index 0)
+            steps = config.output_size - 1 # -1 because we already start with <START> token (index 0)
             X_samp = generate(model, X_init, steps, do_sample=True).to('cpu')
             distances = []
             for i in range(X_samp.size(0)):
@@ -543,7 +545,7 @@ def print_samples(num=10):
     else:
         assert False, f"Unrecognized data mode {data_mode=}"
     top_k = args.top_k if args.top_k != -1 else None
-    steps = train_dataset.get_output_length() - 1 # -1 because we already start with <START> token (index 0)
+    steps = config.output_size - 1 # -1 because we already start with <START> token (index 0)
     X_samp = generate(model, X_init, steps, top_k=top_k, do_sample=True).to('cpu')
     train_samples, test_samples, new_samples = [], [], []
     for i in range(X_samp.size(0)):
@@ -640,7 +642,7 @@ def lastOccurrenceDistance(ints, max_distance):
 
 class CharDataset(Dataset):
 
-    def __init__(self, mode, words, chars, max_word_length):
+    def __init__(self, mode, words, chars, block_size):
         self.data_mode = mode  # DataMode.(WORDS|QA|DISTANCE)
         self.words = words     # List of strings: names (WORDS) | ListOps examples (QA) | ints (DISTANCE)
         if mode == DataMode.DISTANCE:
@@ -648,12 +650,11 @@ class CharDataset(Dataset):
             # print(f"ints = {self.ints}\n")
             # self.lastOccurrence = {value: index for index, value in enumerate(self.ints)}
             #  == dictionary mapping each int to its last occurrence (index)
-            self.lastOccurrence, self.ints = lastOccurrenceDistance(self.ints, max_word_length)
+            self.lastOccurrence, self.ints = lastOccurrenceDistance(self.ints, block_size)
             # print(f"lastOccurrence = {self.lastOccurrence}\n")
             print(f"maximum lastOccurrence for {len(self.ints)} ints = {max(self.lastOccurrence)}")
         self.chars = chars     # Set of all chars used in words
-        # self.max_word_length = 1 # when output is an int
-        self.max_word_length = max_word_length # number of logits out
+        self.block_size = block_size # number of inputs (typically 1 for RNNs, max_word_length+1 for transformers (WORDS), etc.
         self.stoi = {ch:i+1 for i,ch in enumerate(chars)} # +1 to reserve 0 for padding char
         self.itos = {i:s for s,i in self.stoi.items()} # inverse mapping
         self.unknown_index = -1
@@ -671,13 +672,6 @@ class CharDataset(Dataset):
             return vocab_size
         else:
             return len(self.chars) + 1 # all the possible characters and special 0 token
-
-    def get_output_length(self):
-        if self.data_mode == DataMode.DISTANCE:
-            # return 1 # int output
-            return self.max_word_length # logits output
-        else:
-            return self.max_word_length + 1 # <START> token followed by words
 
     def encode(self, word):
 
@@ -731,8 +725,8 @@ class CharDataset(Dataset):
             word = self.words[idx].strip()
             assert word[0] != '|', f"ListOps input format not support by data-mode WORDS"
             ix = self.encode(word)
-            x = torch.zeros(self.max_word_length + 1, dtype=torch.long)
-            y = torch.zeros(self.max_word_length + 1, dtype=torch.long)
+            x = torch.zeros(self.block_size, dtype=torch.long)
+            y = torch.zeros(self.block_size, dtype=torch.long)
             x[1:1+len(ix)] = ix  # 0,x[0],x[1],...,x[end]
             y[:len(ix)] = ix
             y[len(ix)+1:] = -1 # index -1 will mask the loss at the inactive locations
@@ -762,8 +756,8 @@ class CharDataset(Dataset):
             iy = self.encode(target)  # each char of target converted to an integer
             nx = len(ix)
             ny = len(iy)
-            x = torch.zeros(self.max_word_length, dtype=torch.long)
-            y = torch.zeros(self.max_word_length, dtype=torch.long)
+            x = torch.zeros(self.block_size, dtype=torch.long)
+            y = torch.zeros(self.block_size, dtype=torch.long)
 
             # Convert ix to a torch.LongTensor if it's not already
             ix_tensor = torch.tensor(ix, dtype=torch.long) if not isinstance(ix, torch.Tensor) else ix.long()
@@ -890,8 +884,9 @@ def create_datasets(input_file, data_mode, block_size):
     print(f"split up the dataset into {len(train_words)} training examples and {len(test_words)} test examples")
 
     # wrap in dataset objects
-    train_dataset = CharDataset(data_mode, train_words, chars, max_word_length)
-    test_dataset = CharDataset(data_mode, test_words, chars, max_word_length)
+    assert(block_size > max_word_length) # max_word_length + 1 is tight (need one start-char)
+    train_dataset = CharDataset(data_mode, train_words, chars, block_size)
+    test_dataset = CharDataset(data_mode, test_words, chars, block_size)
 
     return train_dataset, test_dataset
 
@@ -969,14 +964,8 @@ if __name__ == '__main__':
     train_dataset, test_dataset = create_datasets(args.input_file, data_mode, args.block_size)
     vocab_size = train_dataset.get_vocab_size()
     block_size = args.block_size
-    min_block_size = train_dataset.get_output_length()
-    print(f"+++ dataset determined that: {vocab_size=}, {min_block_size=}")
-    if block_size < min_block_size:
-        print(f"increasing {block_size=} to {min_block_size=}\n")
-        block_size = min_block_size
-
+    print(f"+++ dataset determined that: {vocab_size=}")
     print(f"test_dataset: {test_dataset=}")
-
     # init model - FIXME: For DataMode.DISTANCE, output an unsigned int instead of (too many) logits
     config = ModelConfig(vocab_size=vocab_size, block_size=block_size,
                          n_layer=args.n_layer, n_head=args.n_head,
