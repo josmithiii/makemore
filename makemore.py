@@ -589,18 +589,6 @@ def evaluate(model, dataset, data_mode, batch_size=50, max_batches=None):
 # -----------------------------------------------------------------------------
 # helper functions for creating the training and test Datasets that emit words
 
-# ChatGPT-4T:
-def lastOccurrenceDistance3(ints, max_distance):
-    # # Example usage
-    # ints = [1, 2, 3, 2, 4, 1, 2, 3, 4, 2]
-    # max_distance = 5
-    # distances = lastOccurrenceDistance(ints, max_distance)
-    # print("Distances:", distances)
-    nints = len(ints)
-    # print(f"lastOccurrenceDistance: Received {nints} ints:\n{ints=}")
-    lastOccurrence = [0] * nints  # Initialize distances with 0
-    lastSeen = {}  # Dictionary to track the last seen index of each item
-
     for i, itm in enumerate(ints):
         if itm in lastSeen:
             # Calculate distance from the last occurrence, capped at max_distance - 1
@@ -612,43 +600,40 @@ def lastOccurrenceDistance3(ints, max_distance):
     # print(f"lastOccurrenceDistance: Returning {len(lastOccurrence)} distances:\n{lastOccurrence=}")
     return lastOccurrence
 
-# ChatGPT-4T:
-def lastOccurrenceDistance2(ints, max_distance):
-    nints = len(ints)
-    # print(f"lastOccurrenceDistance: Received {nints} ints:\n{ints=}")
-    lastOccurrence = [0] * nints
-    for i in range(nints):
-        if i == 0:
-            continue
-        itm = ints[i]
-        for ir in reversed(range(i)):
-            if ints[ir] == itm:
-                dist = i - ir
-                if dist >= max_distance:
-                    dist = max_distance - 1
-                lastOccurrence[i] = dist
-                # print(f"lastOccurrence[{i}] of {itm} is {dist} samples ago at index {ir}")
-                break
-    # print(f"lastOccurrenceDistance: Returning {len(lastOccurrence)} distances:\n{lastOccurrence=}")
-    return lastOccurrence, ints
-
+# my version:
 def lastOccurrenceDistance(ints, max_distance):
+    # # Example usage:
+    # ints = [1, 2, 3, 2, 4, 1, 2, 3, 4, 2]
+    # max_distance = 5
+    # distances = lastOccurrenceDistance(ints, max_distance)
+    # print("Distances:", distances)
     nints = len(ints)
     # print(f"lastOccurrenceDistance: Received {nints} ints:\n{ints=}")
     lastOccurrence = [0] * nints
-    for i in range(nints):
-        if i == 0:
-            continue
-        itm = ints[i]
-        for ir in reversed(range(i)):
-            if ints[ir] == itm:
-                dist = i - ir
-                if dist >= max_distance:
-                    dist = max_distance - 1
-                    ints[i-dist] = itm # just whack it to be true
-                lastOccurrence[i] = dist
-                # print(f"lastOccurrence[{i}] of {itm} is {dist} samples ago at index {ir}")
-                break
+    # New version by ChatGPT-4T:
+    lastSeen = {}  # Dictionary to track the last seen index of each item
+    for i, itm in enumerate(ints):
+        if itm in lastSeen:
+            # Calculate distance from the last occurrence, capped at max_distance - 1
+            dist = min(i - lastSeen[itm], max_distance - 1)
+            lastOccurrence[i] = dist
+            ints[i-dist] = itm # make it true even when clipped - ASSUMES MUTABILITY OF ints
+        # Update the last seen index for the current item
+        lastSeen[itm] = i
+    # Previous version by me;
+    # for i in range(nints):
+    #     if i == 0:
+    #         continue
+    #     itm = ints[i]
+    #     for ir in reversed(range(i)):
+    #         if ints[ir] == itm:
+    #             dist = i - ir
+    #             if dist >= max_distance:
+    #                 dist = max_distance - 1
+    #                 ints[i-dist] = itm # just whack it to be true - ASSUMES MUTABILITY OF ints
+    #             lastOccurrence[i] = dist
+    #             # print(f"lastOccurrence[{i}] of {itm} is {dist} samples ago at index {ir}")
+    #             break
     # print(f"lastOccurrenceDistance: Returning {len(lastOccurrence)} distances:\n{lastOccurrence=}")
     return lastOccurrence, ints
 
@@ -740,7 +725,7 @@ class CharDataset(Dataset):
     #     # print(f"Last occurrence of ix = {ix} from index {idx} is at index {iolo} which is {stlo} samples earlier\n")
     #     return stlo
 
-    def __getitem__(self, idx): # CharDataset.__getitem__: idx is an int addressing one word in words:
+    def __getitem__(self, idx): # CharDataset.__getitem__: idx is an int addressing one word in input:
         # print (f"__getitem__: idx = {idx}, word == {self.words[idx]}, data_mode = {self.data_mode}")
         if self.data_mode == DataMode.WORDS:
             word = self.words[idx].strip()
@@ -753,7 +738,6 @@ class CharDataset(Dataset):
             y[len(ix)+1:] = -1 # index -1 will mask the loss at the inactive locations
         elif self.data_mode == DataMode.DISTANCE: # randomly ordered ints
             ix = self.ints[idx]
-            #iy = self.samplesToLastOccurrence(ix,idx)
             iy = self.lastOccurrence[idx]
             x = torch.zeros(1, dtype=torch.long)
             y = torch.zeros(1, dtype=torch.long)
@@ -936,7 +920,7 @@ if __name__ == '__main__':
     # parse command line args
     parser = argparse.ArgumentParser(description="Make More")
     # system/input/output
-    parser.add_argument('--input-file', '-i', type=str, default='names.txt', help="input text file, where .txt suffix => one word per line to make more of, while .tsv => <answer><tab><prompt> each line (e.g., ListOps data)")
+    parser.add_argument('--input-file', '-i', type=str, default='./data/words/names.txt', help="input text file, where .txt suffix => one word per line to make more of, while .tsv => <answer><tab><prompt> each line (e.g., ListOps data)")
     parser.add_argument('--work-dir', '-o', type=str, default='out', help="output working directory")
     parser.add_argument('--data-mode', type=str, default="words", help="data type: (words|qa|distance)")
     parser.add_argument('--block-size', type=int, default=32, help="block size: (max word length | max Q+A length | max_distance+1)")
