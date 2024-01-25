@@ -10,12 +10,18 @@
             "request": "launch",
             "program": "${workspaceFolder}/makemore.py", // Path to your Python script
             "args": [
+                "--data-mode",
+                "distance",
+                "--batch-size",
+                "8",
+                "--block-size",
+                "32",
                 "--type",
-                "transformer", // was "gru",
+                "gru",
                 "--input",
-                "data/words.txt", // ./data/ListOps/train_d8.tsv
+                "~/w/makemore-jos/data/words/names.txt",
                 "--max-steps",
-                "500"
+                "210"
             ], // Command line arguments
             "console": "integratedTerminal", // Or "externalTerminal"
             "cwd": "${workspaceFolder}", // Current working directory

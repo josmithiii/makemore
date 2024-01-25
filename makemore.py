@@ -1,4 +1,6 @@
 """
+makelogits - jos extension of makemore by Andrej Karpathy - details in ./README.md
+
 you give this script some words (one per line) and it will generate more things like it.
 uses super state of the art Transformer AI tech
 this code is intended to be super hackable. tune it to your needs.
@@ -39,21 +41,28 @@ from enum import Enum
 import cProfile
 import random
 
+def setSeed(seed):
+    random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+
 # -----------------------------------------------------------------------------
 
 DataMode = Enum('DataMode', ['WORDS', 'QA', 'DISTANCE'])
 
 @dataclass
 class ModelConfig:
-    block_size: int = 16 # length of the input sequences of integers, originally max_word_length+1 == max chars/word + <start>
-    vocab_size: int = None # number of output logits - input integers are in the range [0 .. vocab_size -1]
+    vocab_size: int = None # number of output logits / output classes
     # parameters below control the sizes of each model slightly differently
     n_layer: int = 4
     n_embd: int = 64  # input embedding
     n_embd2: int = 64 # hidden-state embedding (GRU et al.)
     n_head: int = 4
+    # extension of makemore to new types of data (beyond just words to make more of)
     data_mode: DataMode = DataMode.WORDS # data modes are WORDS (original), QA (Question/Answer), and DISTANCE
-    # autoset by file extension (.txt for words, .tsv for QA such as ListOps)
+    block_size: int = 16 # input sequence length, originally max_word_length+1 == max chars/word + <start>
+    # block_size is important for Transformer and any model that works only on one input buffer at a time
+    # (no recurrence).
 
 # -----------------------------------------------------------------------------
 # Transformer Language Model (*exactly* as used in GPT-2)
@@ -156,7 +165,7 @@ class Transformer(nn.Module):
         pos = torch.arange(0, t, dtype=torch.long, device=device).unsqueeze(0) # shape (1, t)
 
         # forward the GPT model itself
-        print(f"Transformer: idx for wte embedding =\n{idx.transpose(0,1)=}")
+        #print(f"Transformer: idx for wte embedding =\n{idx.transpose(0,1)=}")
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (1, t, n_embd)
         x = tok_emb + pos_emb
@@ -488,29 +497,23 @@ def generate(model, idx, max_new_tokens, temperature=1.0, do_sample=False, top_k
     return idx
 
 @torch.no_grad()
-def generate_map(model, idx):
-    """
-    Take an input sequence of indices idx (LongTensor of shape (b,t)) and generate
-    the corresponding output sequence for DataMode.DISTANCE.
-    """
-    block_size = model.get_block_size()
-    logits, _ = model(idx)
-    return logits
-
 def print_samples(num=10):
     """ samples from the model and pretty prints the decoded samples """
     X_init = torch.zeros(num, 1, dtype=torch.long).to(args.device)
     print(f"print_samples: {data_mode=}")
-    random.seed(42)
+    setSeed(42)
     if data_mode == DataMode.DISTANCE:
         nBlocks = 1 + num // block_size
         for k in range(nBlocks):
             X_init = torch.tensor([random.randint(0, num/2) for _ in range(num)]).expand(1,num) # num/2 to get some repeats
-            X_samp = generate_map(model, X_init).to('cpu')
             print(f"X_init.shape: {X_init.shape=}")
-            print(f"X_init[{k}] =\n\t{X_init=}")
+            print(f"X_init[{k}]:\n\t{X_init=}")
             X_true, _ = lastOccurrenceDistance(torch.flatten(X_init).tolist(), block_size)
-            print(f"X_true =\n\t{X_true=}")
+            print(f"X_true:\n\t{X_true=}")
+            # Initialize with one block, and then generate another
+            X_samp = generate(model, X_init, block_size, temperature=0.0, do_sample=False, top_k=None).to('cpu')
+            print(f"X_samp.shape (two blocks: initial + predicted): {X_samp.shape=}")
+            print(f"X_samp[{k}]:\n\t{X_samp=}")
             print(f"X_samp.shape: {X_samp.shape=}")
             max_values, max_indices = torch.max(X_samp, dim=1)
             print(f"X_samp max indices:\n\t{max_indices=}")
@@ -594,7 +597,7 @@ def lastOccurrenceDistance3(ints, max_distance):
     # distances = lastOccurrenceDistance(ints, max_distance)
     # print("Distances:", distances)
     nints = len(ints)
-    print(f"lastOccurrenceDistance: Received {nints} ints:\n{ints=}")
+    # print(f"lastOccurrenceDistance: Received {nints} ints:\n{ints=}")
     lastOccurrence = [0] * nints  # Initialize distances with 0
     lastSeen = {}  # Dictionary to track the last seen index of each item
 
@@ -606,13 +609,13 @@ def lastOccurrenceDistance3(ints, max_distance):
         # Update the last seen index for the current item
         lastSeen[itm] = i
 
-    print(f"lastOccurrenceDistance: Returning {len(lastOccurrence)} distances:\n{lastOccurrence=}")
+    # print(f"lastOccurrenceDistance: Returning {len(lastOccurrence)} distances:\n{lastOccurrence=}")
     return lastOccurrence
 
 # ChatGPT-4T:
 def lastOccurrenceDistance2(ints, max_distance):
     nints = len(ints)
-    print(f"lastOccurrenceDistance: Received {nints} ints:\n{ints=}")
+    # print(f"lastOccurrenceDistance: Received {nints} ints:\n{ints=}")
     lastOccurrence = [0] * nints
     for i in range(nints):
         if i == 0:
@@ -626,12 +629,12 @@ def lastOccurrenceDistance2(ints, max_distance):
                 lastOccurrence[i] = dist
                 # print(f"lastOccurrence[{i}] of {itm} is {dist} samples ago at index {ir}")
                 break
-    print(f"lastOccurrenceDistance: Returning {len(lastOccurrence)} distances:\n{lastOccurrence=}")
+    # print(f"lastOccurrenceDistance: Returning {len(lastOccurrence)} distances:\n{lastOccurrence=}")
     return lastOccurrence, ints
 
 def lastOccurrenceDistance(ints, max_distance):
     nints = len(ints)
-    print(f"lastOccurrenceDistance: Received {nints} ints:\n{ints=}")
+    # print(f"lastOccurrenceDistance: Received {nints} ints:\n{ints=}")
     lastOccurrence = [0] * nints
     for i in range(nints):
         if i == 0:
@@ -646,7 +649,7 @@ def lastOccurrenceDistance(ints, max_distance):
                 lastOccurrence[i] = dist
                 # print(f"lastOccurrence[{i}] of {itm} is {dist} samples ago at index {ir}")
                 break
-    print(f"lastOccurrenceDistance: Returning {len(lastOccurrence)} distances:\n{lastOccurrence=}")
+    # print(f"lastOccurrenceDistance: Returning {len(lastOccurrence)} distances:\n{lastOccurrence=}")
     return lastOccurrence, ints
 
 
@@ -799,6 +802,19 @@ class CharDataset(Dataset):
         return x, y
 
 def create_datasets(input_file, data_mode, block_size):
+    """
+    Create training and test datasets based on the input file, data mode, and block size.
+
+    Args:
+        input_file (str): The path to the input file.
+        data_mode (DataMode): The mode of the data, which can be DataMode.WORDS, DataMode.DISTANCE, or DataMode.QA.
+        block_size (int): The size of the data block.
+
+    Returns:
+        train_dataset (CharDataset): The training dataset.
+        test_dataset (CharDataset): The test dataset.
+    """
+    # code implementation...
 
     # print("=== AT DATA LOADING BREAKPOINT ===")
     # pdb.set_trace()
@@ -812,14 +828,15 @@ def create_datasets(input_file, data_mode, block_size):
     words = [w for w in words if w] # get rid of any empty strings
     chars = sorted(list(set(''.join(words)))) # all the possible characters
 
-    name,ext = os.path.splitext(input_file)
+    basename = os.path.basename(input_file)
+    name,ext = os.path.splitext(basename)
 
     if data_mode == DataMode.WORDS: # original makemore case - input = list of words such as names
         assert ext == '.txt', f"DataMode.WORDS requires .txt input format, got {ext}"
         max_word_length = max(len(w) for w in words)
     elif data_mode == DataMode.DISTANCE: # distance ints
         assert ext == '.txt', "DataMode.DISTANCE requires .txt input format"
-        if input_file == 'names.txt': # original makemore default
+        if name == 'names': # original makemore default
             print(f"Generating DISTANCE DATA AUTOMATICALLY since no input file-name specified")
 
             # numExamples = 32033 # same as original names.txt why not
@@ -922,7 +939,7 @@ if __name__ == '__main__':
     parser.add_argument('--input-file', '-i', type=str, default='names.txt', help="input text file, where .txt suffix => one word per line to make more of, while .tsv => <answer><tab><prompt> each line (e.g., ListOps data)")
     parser.add_argument('--work-dir', '-o', type=str, default='out', help="output working directory")
     parser.add_argument('--data-mode', type=str, default="words", help="data type: (words|qa|distance)")
-    parser.add_argument('--block-size', type=int, default=16, help="block size: (max word length | max Q+A length | number of distances per shot)")
+    parser.add_argument('--block-size', type=int, default=32, help="block size: (max word length | max Q+A length | max_distance+1)")
     parser.add_argument('--resume', action='store_true', help="when this flag is used, we will resume optimization from existing model in the workdir")
     parser.add_argument('--sample-only', action='store_true', help="just sample from the model and quit, don't train")
     parser.add_argument('--num-workers', '-n', type=int, default=4, help="number of data workers for both train/test")
@@ -938,7 +955,7 @@ if __name__ == '__main__':
     parser.add_argument('--n-embd', type=int, default=64, help="number of feature channels in the model")
     parser.add_argument('--n-embd2', type=int, default=64, help="number of feature channels elsewhere in the model")
     # optimization
-    parser.add_argument('--batch-size', '-b', type=int, default=32, help="batch size during optimization")
+    parser.add_argument('--batch-size', '-b', type=int, default=8, help="batch size during optimization")
     parser.add_argument('--learning-rate', '-l', type=float, default=5e-4, help="learning rate")
     parser.add_argument('--weight-decay', '-w', type=float, default=0.01, help="weight decay")
     args = parser.parse_args()
@@ -1016,7 +1033,7 @@ if __name__ == '__main__':
         print("resuming from existing model in the workdir")
         model.load_state_dict(torch.load(os.path.join(args.work_dir, 'model.pt')))
     if args.sample_only:
-        print_samples(num=50)
+        print_samples(block_size)
         sys.exit()
 
     # init optimizer
@@ -1076,7 +1093,7 @@ if __name__ == '__main__':
 
         # sample from the model
         if step > 0 and step % 200 == 0:
-            print_samples(10)
+            print_samples(block_size)
 
         step += 1
         # termination conditions
