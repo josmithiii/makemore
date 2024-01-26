@@ -674,7 +674,9 @@ class CharDataset(Dataset):
             return len(self.chars) + 1 # all the possible characters and special 0 token
 
     def encode(self, word):
-
+        """
+        encode - convert str word into a list of ints, one per character and return them in a type long tensor.
+        """
         # original: ix = torch.tensor([self.stoi[w] for w in word], dtype=torch.long)
 
         # JOS 1: ix = torch.tensor([self.stoi.get(w, self.unknown_index) for w in word], dtype=torch.long)
@@ -723,13 +725,16 @@ class CharDataset(Dataset):
         # print (f"__getitem__: idx = {idx}, word == {self.words[idx]}, data_mode = {self.data_mode}")
         if self.data_mode == DataMode.WORDS:
             word = self.words[idx].strip()
-            assert word[0] != '|', f"ListOps input format not support by data-mode WORDS"
-            ix = self.encode(word)
-            x = torch.zeros(self.block_size, dtype=torch.long)
-            y = torch.zeros(self.block_size, dtype=torch.long)
-            x[1:1+len(ix)] = ix  # 0,x[0],x[1],...,x[end]
-            y[:len(ix)] = ix
-            y[len(ix)+1:] = -1 # index -1 will mask the loss at the inactive locations
+            assert word[0] != '|', f"ListOps input format not supported by data-mode WORDS"
+            ix = self.encode(word) # tensor of type long, containing an int for each word char and nothing else
+            N = self.block_size
+            assert len(ix) <= N, f"getitem: input WORD of length {len(ix)} overflows input buffer {self.block_size=}"
+            x = torch.zeros(N, dtype=torch.long)
+            y = torch.zeros(N, dtype=torch.long)
+            Nix = len(ix)
+            x[1:1+Nix] = ix  # Copy 'ix' into 'x' starting at index 1: [0,   ix0, ix1, ..., ixNM2, ixNM1, 0, 0, ... 0]
+            y[:Nix] = ix     # Copy 'ix' into 'y' starting at index 0: [ix0, ix1, ix2, ..., ixNM1,     0, 0, 0, ... 0]
+            y[Nix+1:] = -1   # index -1 will mask the loss at the inactive locations
         elif self.data_mode == DataMode.DISTANCE: # randomly ordered ints
             ix = self.ints[idx]
             iy = self.lastOccurrence[idx]
@@ -884,7 +889,6 @@ def create_datasets(input_file, data_mode, block_size):
     print(f"split up the dataset into {len(train_words)} training examples and {len(test_words)} test examples")
 
     # wrap in dataset objects
-    assert(block_size > max_word_length) # max_word_length + 1 is tight (need one start-char)
     train_dataset = CharDataset(data_mode, train_words, chars, block_size)
     test_dataset = CharDataset(data_mode, test_words, chars, block_size)
 
