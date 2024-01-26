@@ -670,8 +670,12 @@ class CharDataset(Dataset):
             vocab_size = max(self.lastOccurrence) + 1
             print(f"CharDataset: {vocab_size=}")
             return vocab_size
-        else:
+        elif self.data_mode == DataMode.WORDS:
             return len(self.chars) + 1 # all the possible characters and special 0 token
+        elif self.data_mode == DataMode.QA:
+            return len(self.words) - 1 # all the possible displacements into the past
+        else:
+            assert False, f"Unknown data_mode {self.data_mode=}"
 
     def encode(self, word):
         """
@@ -721,12 +725,12 @@ class CharDataset(Dataset):
     #     # print(f"Last occurrence of ix = {ix} from index {idx} is at index {iolo} which is {stlo} samples earlier\n")
     #     return stlo
 
-    def __getitem__(self, idx): # CharDataset.__getitem__: idx is an int addressing one word in input:
+    def __getitem__(self, idx): # CharDataset.__getitem__: idx is an int addressing one word (line) in input:
         # print (f"__getitem__: idx = {idx}, word == {self.words[idx]}, data_mode = {self.data_mode}")
         if self.data_mode == DataMode.WORDS:
             word = self.words[idx].strip()
             assert word[0] != '|', f"ListOps input format not supported by data-mode WORDS"
-            ix = self.encode(word) # tensor of type long, containing an int for each word char and nothing else
+            ix = self.encode(word) # tensor of type long
             N = self.block_size
             assert len(ix) <= N, f"getitem: input WORD of length {len(ix)} overflows input buffer {self.block_size=}"
             x = torch.zeros(N, dtype=torch.long)
@@ -736,12 +740,16 @@ class CharDataset(Dataset):
             y[:Nix] = ix     # Copy 'ix' into 'y' starting at index 0: [ix0, ix1, ix2, ..., ixNM1,     0, 0, 0, ... 0]
             y[Nix+1:] = -1   # index -1 will mask the loss at the inactive locations
         elif self.data_mode == DataMode.DISTANCE: # randomly ordered ints
-            ix = self.ints[idx]
-            iy = self.lastOccurrence[idx]
-            x = torch.zeros(1, dtype=torch.long)
-            y = torch.zeros(1, dtype=torch.long)
-            x[0] = ix
-            y[0] = iy
+            N = self.block_size
+            idx0 = max(0,idx - N + 1) # include as much history as we can fit into the block
+            ix = self.ints[idx0:idx+1]  # all ints up to and including the latest at idx
+            iy0 = self.lastOccurrence[ix[-1]]  # Using ix[-1] to safely get the last element
+            x = -torch.ones(N, dtype=torch.long)
+            ix_tensor = torch.tensor(ix, dtype=x.dtype)
+            assert len(ix) <= N, f"ix is longer ({len(ix)}) than the specified length {N=} of the tensor x."
+            x[:len(ix)] = ix_tensor
+            y = -torch.ones(N, dtype=torch.long)
+            y[min(len(ix)-1,N-1)] = iy0 # last element contains the answer (distance back to the last occurrence of latest input int)
         elif self.data_mode == DataMode.QA:
             word = self.words[idx].strip()
             assert word[0] == '|', f"QA data-mode requires ListOps input format (.tsv), found word[0] = {word[0]}"
@@ -761,6 +769,7 @@ class CharDataset(Dataset):
             iy = self.encode(target)  # each char of target converted to an integer
             nx = len(ix)
             ny = len(iy)
+            assert nx+ny < self.block_size, f"getitem: block_size {self.block_size=} must equal or exceed {nx=} + {ny=}"
             x = torch.zeros(self.block_size, dtype=torch.long)
             y = torch.zeros(self.block_size, dtype=torch.long)
 
@@ -1033,9 +1042,10 @@ if __name__ == '__main__':
         batch = batch_loader.next()
         batch = [t.to(args.device) for t in batch]
         X, Y = batch
-
-        # print(f"{X.shape=}, {Y.shape=}")
         assert X.shape == Y.shape, f"{X.shape=} != {Y.shape=}"
+        print(f"{X.shape=}, {Y.shape=}")
+        print(f"X:\n\t{X=}")
+        print(f"Y:\n\t{Y=}")
         # feed into the model
         logits, loss = model(X, Y)
 
