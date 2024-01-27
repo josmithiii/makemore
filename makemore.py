@@ -578,8 +578,8 @@ def print_samples(num=10):
 def evaluate(model, dataset, data_mode, batch_size=50, max_batches=None):
     model.eval()
     doShuffle = (data_mode != DataMode.DISTANCE) # this is a memory task that shuffling would destroy
-    loader = DataLoader(dataset, shuffle=doShuffle, batch_size=batch_size, num_workers=0)
-    loader = DataLoader(dataset, shuffle=doShuffle, batch_size=batch_size, num_workers=0)
+    loader = DataLoader(dataset, shuffle=doShuffle, batch_size=batch_size, num_workers=0, batch_sampler=doShuffle)
+    loader = DataLoader(dataset, shuffle=doShuffle, batch_size=batch_size, num_workers=0, batch_sampler=doShuffle)
     losses = []
     for i, batch in enumerate(loader):
         batch = [t.to(args.device) for t in batch]
@@ -729,7 +729,7 @@ class CharDataset(Dataset):
         print(f"getitem: {idx=}")
         if idx != self.idxp+1:
             print(f"getitem: expected {idx=} == {self.idxp+1=}")
-        self.idxp = idx + 1
+        self.idxp = idx
         if self.data_mode == DataMode.WORDS:
             word = self.words[idx].strip()
             assert word[0] != '|', f"ListOps input format not supported by data-mode WORDS"
@@ -952,6 +952,7 @@ class InfiniteDataLoader:
 
     def __init__(self, dataset, **kwargs):
         doShuffle = (data_mode != DataMode.DISTANCE) # this is a memory task that shuffling would destroy
+        print(f"{doShuffle=}")
         if doShuffle:
             train_sampler = torch.utils.data.RandomSampler(dataset, replacement=True, num_samples=int(1e10))
         else:
