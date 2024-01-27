@@ -725,7 +725,10 @@ class CharDataset(Dataset):
     def __getitem__(self, idx): # CharDataset.__getitem__: idx is an int addressing one word (line) in input:
         # Return inputs and targets for one line of the input file (one training example).
         # print (f"__getitem__: idx = {idx}, word == {self.words[idx]}, data_mode = {self.data_mode}")
-        assert idx == self.idxp+1, f"getitem: expected {idx=} == {self.idxp+1=}"
+        # assert idx == self.idxp+1, f"getitem: expected {idx=} == {self.idxp+1=}"
+        print(f"getitem: {idx=}")
+        if idx != self.idxp+1:
+            print(f"getitem: expected {idx=} == {self.idxp+1=}")
         self.idxp = idx + 1
         if self.data_mode == DataMode.WORDS:
             word = self.words[idx].strip()
@@ -749,7 +752,7 @@ class CharDataset(Dataset):
             iy0 = self.lastOccurrence[ixe]
             print(f"getitem: distance to last occurrence of self.ints[{idx+1}] == {ixe} is {iy0}")
             # pdb.set_trace()
-            assert ixe == self.ints[idx-1], f"{ixe=} should equal {self.ints[idx-1]=}"
+            assert ixe == self.ints[idx], f"{ixe=} should equal {self.ints[idx]=}"
             x = -torch.ones(N, dtype=torch.long)
             ixt = torch.tensor(ix, dtype=x.dtype)
             assert Nix <= N, f"ix is longer ({len(ix)}) than the specified length {N=} of the tensor x."
