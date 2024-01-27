@@ -13,6 +13,31 @@
                 "--data-mode",
                 "distance",
                 "--batch-size",
+                "4",
+                "--block-size",
+                "8",
+                "--type",
+                "gru",
+                "--max-steps",
+                "210"
+            ], // Command line arguments
+            "console": "integratedTerminal", // Or "externalTerminal"
+            "cwd": "${workspaceFolder}", // Current working directory
+            "env": {}, // Environment variables
+            "envFile": "${workspaceFolder}/.env", // Environment variable file
+            "stopOnEntry": false,
+            "justMyCode": false,
+            "showReturnValue": true
+        },
+        {
+            "name": "Python: Launch with Arguments",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/makemore.py", // Path to your Python script
+            "args": [
+                "--data-mode",
+                "distance",
+                "--batch-size",
                 "8",
                 "--block-size",
                 "32",
