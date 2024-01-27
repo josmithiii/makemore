@@ -827,7 +827,7 @@ def create_datasets(input_file, data_mode, block_size):
     # print("=== AT DATA LOADING BREAKPOINT ===")
     # pdb.set_trace()
 
-    HERE:
+    HERE: [CANNOT COMPILE RIGHT NOW - commit 9977004 might be ok - I did not mean to commit, sorry]
     MEASURE VOCAB SIZE AND SET BLOCK SIZE TO THAT WHEN None OTHERWISE
     if block_size == None:
         block_size = vocab_size + 1
