@@ -46,6 +46,9 @@ def setSeed(seed):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
 
+from torch.utils.tensorboard import SummaryWriter
+import hiddenlayer as hl
+
 # -----------------------------------------------------------------------------
 
 DataMode = Enum('DataMode', ['WORDS', 'QA', 'DISTANCE'])
@@ -61,6 +64,7 @@ class ModelConfig:
     # extension of makemore to new types of data (beyond just words to make more of)
     data_mode: DataMode = DataMode.WORDS # data modes are WORDS (original), QA (Question/Answer), and DISTANCE
     block_size: int = 16 # input sequence length, originally max_word_length+1 == max chars/word + <start>
+    logits_size: int = None # output logits length, originally same as block_size
     output_size: int = 128 # number of output logits == number of chars for WORDS, desired memory length for QA or DISTANCE
 
     # block_size is important for Transformer and any model that works only on one input buffer at a time
@@ -744,16 +748,16 @@ class CharDataset(Dataset):
             N = self.block_size
             idx0 = max(0,idx - N + 1) # include as much history as we can fit into the block
             ix = self.ints[idx0:idx+1]  # all ints up to and including the latest at idx
-            iy0 = self.lastOccurrence[ix[-1]]  # ix[-1] == last element
+            Nix = len(ix)
+            iy0 = self.lastOccurrence[ix[Nix-1]]
             assert ix[-1]==self.ints[idx], f"BF"
             x = -torch.ones(N, dtype=torch.long)
             ixt = torch.tensor(ix, dtype=x.dtype)
-            Nix = len(ix)
             assert Nix <= N, f"ix is longer ({len(ix)}) than the specified length {N=} of the tensor x."
             xs = N-Nix # starting index for ixt in x
             x[xs:] = ixt
             y = -torch.ones(N, dtype=torch.long)
-            assert iy0 < block_size, f"FIXME: Must embed out to MAX MEMORY for DISTANCE"
+            assert iy0 < self.block_size, f"FIXME: Must embed out to MAX MEMORY for DISTANCE"
             y[N-1] = iy0 # last element contains the answer (distance back to the last occurrence of latest input int)
         elif self.data_mode == DataMode.DISTANCE_LEFT_JUSTIFIED: # randomly ordered ints
             N = self.block_size
@@ -827,11 +831,6 @@ def create_datasets(input_file, data_mode, block_size):
     # print("=== AT DATA LOADING BREAKPOINT ===")
     # pdb.set_trace()
 
-    HERE: [CANNOT COMPILE RIGHT NOW - commit 9977004 might be ok - I did not mean to commit, sorry]
-    MEASURE VOCAB SIZE AND SET BLOCK SIZE TO THAT WHEN None OTHERWISE
-    if block_size == None:
-        block_size = vocab_size + 1
-
     # preprocessing of the input text file
     with open(input_file, 'r') as f:
         data = f.read() # read whole file into a single str
@@ -840,6 +839,9 @@ def create_datasets(input_file, data_mode, block_size):
     words = [w.strip() for w in words] # get rid of any leading or trailing white space
     words = [w for w in words if w] # get rid of any empty strings
     chars = sorted(list(set(''.join(words)))) # all the possible characters
+    vocab_size = len(chars) + 1 # add one for special separation token
+    if block_size == None:
+        block_size = vocab_size
 
     basename = os.path.basename(input_file)
     name,ext = os.path.splitext(basename)
@@ -922,7 +924,7 @@ def create_datasets(input_file, data_mode, block_size):
     train_dataset = CharDataset(data_mode, train_words, chars, block_size)
     test_dataset = CharDataset(data_mode, test_words, chars, block_size)
 
-    return train_dataset, test_dataset
+    return train_dataset, test_dataset, block_size
 
 class InfiniteDataLoader:
     """
@@ -1002,7 +1004,7 @@ if __name__ == '__main__':
 
     block_size = args.block_size
 
-    train_dataset, test_dataset = create_datasets(args.input_file, data_mode, args.block_size)
+    train_dataset, test_dataset, block_size = create_datasets(args.input_file, data_mode, args.block_size)
 
     embedding_size = args.embedding_size
     logits_size = args.logits_size
@@ -1022,7 +1024,8 @@ if __name__ == '__main__':
         n_layer=args.n_layer,
         vocab_size=vocab_size,
         block_size=block_size,
-        logits_size=logits_size,
+        # Mamba output size == block_size because it is a sequence to sequence map => no
+        # logits_size=logits_size,
         d_state=args.n_head, # too janky?
         expand=2, # FIXME: bring out state-expansion-factor parameter
         dt_rank='auto', # auto => d_model/16
@@ -1080,6 +1083,19 @@ if __name__ == '__main__':
         print(f"{X.shape=}, {Y.shape=}")
         print(f"X:\n\t{X=}")
         print(f"Y:\n\t{Y=}")
+
+        # Output model diagram:
+        make_graphs = 0
+        if step == 0 and make_graphs == 1:
+
+            writer = SummaryWriter()
+            writer.add_graph(model, X)
+            writer.close()
+
+            hl_graph = hl.build_graph(model, X)  # Adjust the input shape
+            hl_graph.theme = hl.graph.THEMES["blue"].copy()
+            hl_graph.save("model_visualization", format="png")
+
         # feed into the model
         logits, loss = model(X, Y)
 
