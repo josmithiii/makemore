@@ -335,10 +335,11 @@ class RNN(nn.Module):
 
     def __init__(self, config, cell_type):
         super().__init__()
-        self.block_size = config.block_size
-        self.vocab_size = config.vocab_size
+        self.block_size = config.block_size # in
+        self.vocab_size = config.vocab_size # out, but also embedding size
         self.start = nn.Parameter(torch.zeros(1, config.n_embd2)) # the starting hidden state
         self.wte = nn.Embedding(config.vocab_size+1, config.n_embd) # token embeddings table, +1 for NULL
+        print(f"RNN: token embedding shape is {(config.vocab_size+1)=} by {config.n_embd=}")
         if cell_type == 'rnn':
             self.cell = RNNCell(config)
         elif cell_type == 'gru':
@@ -352,12 +353,12 @@ class RNN(nn.Module):
         device = idx.device
         b, t = idx.size()
 
-        # print("\n=== AT DATA EMBEDDING BREAKPOINT ===\n")
-        # print(f"idx == {idx}\n")
-        # pdb.set_trace()
-
-        # print(f"RNN: idx shape is {idx.shape}")
+        print(f"RNN: idx shape is {idx.shape}")
         # Not true for last block: assert t == self.block_size, f"RNN: {t=} != {self.block_size=}"
+
+        print("\n=== AT DATA EMBEDDING BREAKPOINT ===\n")
+        print(f"idx == {idx}\n")
+        # pdb.set_trace()
 
         # embed all the integers up front and all at once for efficiency
         emb = self.wte(idx) # (b, t, n_embd)
@@ -665,15 +666,15 @@ class CharDataset(Dataset):
     def contains(self, word):
         return word in self.words
 
-    def get_vocab_size(self):
+    def get_vocab_size(self): # INPUT vocabulary = number of symbols in input
         if self.data_mode == DataMode.DISTANCE:
-            vocab_size = max(self.lastOccurrence) + 1
-            print(f"CharDataset: {vocab_size=}")
+            vocab_size = max(self.ints) + 1 # number of tokens we need to be able to embed
+            print(f"CharDataset: DISTANCE: {vocab_size=}")
             return vocab_size
         elif self.data_mode == DataMode.WORDS:
             return len(self.chars) + 1 # all the possible characters and special 0 token
         elif self.data_mode == DataMode.QA:
-            return len(self.words) - 1 # all the possible displacements into the past
+            return len(self.chars) + 1 # all the possible characters and special 0 token
         else:
             assert False, f"Unknown data_mode {self.data_mode=}"
 
@@ -739,7 +740,22 @@ class CharDataset(Dataset):
             x[1:1+Nix] = ix  # Copy 'ix' into 'x' starting at index 1: [0,   ix0, ix1, ..., ixNM2, ixNM1, 0, 0, ... 0]
             y[:Nix] = ix     # Copy 'ix' into 'y' starting at index 0: [ix0, ix1, ix2, ..., ixNM1,     0, 0, 0, ... 0]
             y[Nix+1:] = -1   # index -1 will mask the loss at the inactive locations
-        elif self.data_mode == DataMode.DISTANCE: # randomly ordered ints
+        elif self.data_mode == DataMode.DISTANCE: # randomly ordered ints, right-justified in the block
+            N = self.block_size
+            idx0 = max(0,idx - N + 1) # include as much history as we can fit into the block
+            ix = self.ints[idx0:idx+1]  # all ints up to and including the latest at idx
+            iy0 = self.lastOccurrence[ix[-1]]  # ix[-1] == last element
+            assert ix[-1]==self.ints[idx], f"BF"
+            x = -torch.ones(N, dtype=torch.long)
+            ixt = torch.tensor(ix, dtype=x.dtype)
+            Nix = len(ix)
+            assert Nix <= N, f"ix is longer ({len(ix)}) than the specified length {N=} of the tensor x."
+            xs = N-Nix # starting index for ixt in x
+            x[xs:] = ixt
+            y = -torch.ones(N, dtype=torch.long)
+            assert iy0 < block_size, f"FIXME: Must embed out to MAX MEMORY for DISTANCE"
+            y[N-1] = iy0 # last element contains the answer (distance back to the last occurrence of latest input int)
+        elif self.data_mode == DataMode.DISTANCE_LEFT_JUSTIFIED: # randomly ordered ints
             N = self.block_size
             idx0 = max(0,idx - N + 1) # include as much history as we can fit into the block
             ix = self.ints[idx0:idx+1]  # all ints up to and including the latest at idx
@@ -800,7 +816,7 @@ def create_datasets(input_file, data_mode, block_size):
     Args:
         input_file (str): The path to the input file.
         data_mode (DataMode): The mode of the data, which can be DataMode.WORDS, DataMode.DISTANCE, or DataMode.QA.
-        block_size (int): The size of the data block.
+        block_size (int): The size of the data block.  Set to None to have it computed automatically and retrieve using get_vocab_size
 
     Returns:
         train_dataset (CharDataset): The training dataset.
@@ -810,6 +826,11 @@ def create_datasets(input_file, data_mode, block_size):
 
     # print("=== AT DATA LOADING BREAKPOINT ===")
     # pdb.set_trace()
+
+    HERE:
+    MEASURE VOCAB SIZE AND SET BLOCK SIZE TO THAT WHEN None OTHERWISE
+    if block_size == None:
+        block_size = vocab_size + 1
 
     # preprocessing of the input text file
     with open(input_file, 'r') as f:
@@ -881,9 +902,9 @@ def create_datasets(input_file, data_mode, block_size):
 
 
     print(f"number of examples in the dataset: {len(words)}")
-    print(f"max word length or block size: {max_word_length}")
+    print(f"input block size: {block_size}")
     print(f"number of unique characters in the vocabulary: {len(chars)}")
-    print(f"vocabulary: {''.join(chars)}")
+    print(f"chars: {''.join(chars)}")
 
     # create_datasets: partition the input data into a training and the test set
     nWords = len(words)
@@ -930,15 +951,19 @@ if __name__ == '__main__':
     # system/input/output
     parser.add_argument('--input-file', '-i', type=str, default='./data/words/names.txt', help="input text file, where .txt suffix => one word per line to make more of, while .tsv => <answer><tab><prompt> each line (e.g., ListOps data)")
     parser.add_argument('--work-dir', '-o', type=str, default='out', help="output working directory")
-    parser.add_argument('--data-mode', type=str, default="words", help="data type: (words|qa|distance)")
-    parser.add_argument('--block-size', type=int, default=32, help="block size: (max word length | max Q+A length | max_distance+1)")
+    parser.add_argument('--data-mode', type=str, default="words", help="data type: (words|qa|distance|distance-exp)")
+    # input/output sizes and dimensionalities
+    parser.add_argument('--block-size', type=int, default=None, help="input block size [default = vocab_size measured from data]: (max word length + 1 | max Q+A length + 2 | max short-term memory")
+    parser.add_argument('--embedding-size', type=int, default=32, help="embedding size: (max word length + 1 | number of Answers | max_distance + 1)")
+    parser.add_argument('--logits-size', type=int, default=None, help="logits size: defaults to embedding-size")
+    # training
+    parser.add_argument('--device', type=str, default='cpu', help="device to use for compute, examples: cpu|cuda|cuda:2|mps")
     parser.add_argument('--resume', action='store_true', help="when this flag is used, we will resume optimization from existing model in the workdir")
-    parser.add_argument('--sample-only', action='store_true', help="just sample from the model and quit, don't train")
     parser.add_argument('--num-workers', '-n', type=int, default=4, help="number of data workers for both train/test")
     parser.add_argument('--max-steps', type=int, default=-1, help="max number of optimization steps to run for, or -1 for infinite.")
-    parser.add_argument('--device', type=str, default='cpu', help="device to use for compute, examples: cpu|cuda|cuda:2|mps")
-    parser.add_argument('--seed', type=int, default=3407, help="seed")
     # sampling
+    parser.add_argument('--seed', type=int, default=3407, help="seed")
+    parser.add_argument('--sample-only', action='store_true', help="just sample from the model and quit, don't train")
     parser.add_argument('--top-k', type=int, default=-1, help="top-k for sampling, -1 means no top-k")
     # model
     parser.add_argument('--type', type=str, default='transformer', help="model class type to use, bigram|mlp|rnn|gru|bow|transformer|mamba")
@@ -974,13 +999,21 @@ if __name__ == '__main__':
     print(f"dataset determined that: {data_mode=}")
 
     # init datasets
-    train_dataset, test_dataset = create_datasets(args.input_file, data_mode, args.block_size)
-    vocab_size = train_dataset.get_vocab_size()
+
     block_size = args.block_size
+
+    train_dataset, test_dataset = create_datasets(args.input_file, data_mode, args.block_size)
+
+    embedding_size = args.embedding_size
+    logits_size = args.logits_size
+    vocab_size = train_dataset.get_vocab_size()
+    if logits_size == None:
+        logits_size = vocab_size
+        
     print(f"+++ dataset determined that: {vocab_size=}")
     print(f"test_dataset: {test_dataset=}")
     # init model - FIXME: For DataMode.DISTANCE, output an unsigned int instead of (too many) logits
-    config = ModelConfig(vocab_size=vocab_size, block_size=block_size,
+    config = ModelConfig(vocab_size=vocab_size, block_size=block_size, logits_size=logits_size,
                          n_layer=args.n_layer, n_head=args.n_head,
                          n_embd=args.n_embd, n_embd2=args.n_embd2, data_mode=data_mode)
 
@@ -988,7 +1021,8 @@ if __name__ == '__main__':
         d_model=args.n_embd,
         n_layer=args.n_layer,
         vocab_size=vocab_size,
-        block_size=block_size, # FIXME: CURRENTLY ONLY HELD BY MAMBA AND RETURNED ON REQUEST - WHAT TO DO WITH IT?
+        block_size=block_size,
+        logits_size=logits_size,
         d_state=args.n_head, # too janky?
         expand=2, # FIXME: bring out state-expansion-factor parameter
         dt_rank='auto', # auto => d_model/16
