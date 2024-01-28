@@ -360,10 +360,10 @@ class RNN(nn.Module):
         # print(f"RNN: tokens shape is {tokens.shape}")
         # Not true for last block: assert t == self.block_size, f"RNN: {t=} != {self.block_size=}"
 
-        # print(f"RNN: === AT DATA EMBEDDING BREAKPOINT:\n{tokens=}")
         # pdb.set_trace()
 
         # embed all the integers up front and all at once for efficiency
+        print(f"RNN: === AT DATA EMBEDDING BREAKPOINT:\n{tokens=}")
         emb = self.wte(tokens) # (b, t, n_embd)
 
         # sequentially iterate over the inputs and update the RNN state each tick
@@ -574,11 +574,25 @@ def print_samples(num=10):
     print('-'*80)
 
 @torch.inference_mode()
-def evaluate(model, dataset, data_mode, batch_size=50, max_batches=None):
+def evaluate(model, dataset, data_mode, batch_size=50, max_batches=None, make_graphs=False):
     model.eval()
+
+    # Output model diagram if requested:
+    if make_graphs:
+        writer = SummaryWriter()
+        dummy_input = torch.randn(1, len(dataset), batch_size)
+        writer.add_graph(model, dummy_input)
+        writer.close()
+        hl_graph = hl.build_graph(model, test_dataset)  # Adjust the input shape
+        hl_graph.theme = hl.graph.THEMES["blue"].copy()
+        gfname = "model_visualization"
+        hl_graph.save(gfname, format="png")
+        print(f"Written: {gfname}.png")
+
     doShuffle = (data_mode != DataMode.DISTANCE) # this is a memory task that shuffling would destroy
-    loader = DataLoader(dataset, shuffle=doShuffle, batch_size=batch_size, num_workers=0, batch_sampler=doShuffle)
-    loader = DataLoader(dataset, shuffle=doShuffle, batch_size=batch_size, num_workers=0, batch_sampler=doShuffle)
+    # original: loader = DataLoader(dataset, shuffle=True, batch_size=batch_size, num_workers=0)
+    loader = DataLoader(dataset, shuffle=doShuffle, batch_size=batch_size, num_workers=0) # , batch_sampler=doShuffle)
+    loader = DataLoader(dataset, shuffle=doShuffle, batch_size=batch_size, num_workers=0) # , batch_sampler=doShuffle)
     losses = []
     for i, batch in enumerate(loader):
         batch = [t.to(args.device) for t in batch]
@@ -589,6 +603,7 @@ def evaluate(model, dataset, data_mode, batch_size=50, max_batches=None):
         if max_batches is not None and i >= max_batches:
             break
     mean_loss = torch.tensor(losses).mean().item()
+
     model.train() # reset model back to training mode
     return mean_loss
 
@@ -1042,7 +1057,7 @@ if __name__ == '__main__':
     if logits_size == None:
         logits_size = vocab_size
         print(f"main: logits_size set to {vocab_size=}")
-        
+
     print(f"+++ dataset determined that: {vocab_size=}")
     print(f"test_dataset: {test_dataset=}")
     # init model - FIXME: For DataMode.DISTANCE, output an unsigned int instead of (too many) logits
@@ -1116,18 +1131,6 @@ if __name__ == '__main__':
         print(f"X:\n\t{X=}")
         print(f"Y:\n\t{Y=}")
 
-        # Output model diagram:
-        make_graphs = 0
-        if step == 0 and make_graphs == 1:
-
-            writer = SummaryWriter()
-            writer.add_graph(model, X)
-            writer.close()
-
-            hl_graph = hl.build_graph(model, X)  # Adjust the input shape
-            hl_graph.theme = hl.graph.THEMES["blue"].copy()
-            hl_graph.save("model_visualization", format="png")
-
         # feed into the model
         logits, loss = model(X, Y)
 
@@ -1144,6 +1147,10 @@ if __name__ == '__main__':
         # logging
         if step % 10 == 0:
             print(f"step {step} | loss {loss.item():.4f} | step time {(t1-t0)*1000:.2f}ms")
+
+        # graph the model
+        # evaluate(model, test_dataset, data_mode, batch_size=args.batch_size, max_batches=1, make_graphs=True)
+        evaluate(model, test_dataset, data_mode, batch_size=args.batch_size, max_batches=1, make_graphs=False)
 
         # evaluate the model
         if step > 0 and step % 500 == 0:
