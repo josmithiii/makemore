@@ -343,7 +343,7 @@ class RNN(nn.Module):
         self.vocab_size = config.vocab_size # out, but also embedding size
         self.start = nn.Parameter(torch.zeros(1, config.n_embd2)) # the starting hidden state
         self.wte = nn.Embedding(config.vocab_size+1, config.n_embd) # token embeddings table, +1 for NULL
-        print(f"RNN: token embedding shape is {(config.vocab_size+1)=} by {config.n_embd=}")
+        print(f"\nRNN: token embedding shape is num_tokens x n_embd: {(config.vocab_size+1)=} by {config.n_embd=}")
         if cell_type == 'rnn':
             self.cell = RNNCell(config)
         elif cell_type == 'gru':
@@ -353,19 +353,19 @@ class RNN(nn.Module):
     def get_block_size(self):
         return self.block_size
 
-    def forward(self, idx, targets=None):
-        device = idx.device
-        b, t = idx.size()
+    def forward(self, tokens, targets=None):
+        device = tokens.device
+        b, t = tokens.size()
 
-        print(f"RNN: idx shape is {idx.shape}")
+        print(f"RNN: tokens shape is {tokens.shape}")
         # Not true for last block: assert t == self.block_size, f"RNN: {t=} != {self.block_size=}"
 
-        print("\n=== AT DATA EMBEDDING BREAKPOINT ===\n")
-        print(f"idx == {idx}\n")
+        print("RNN:=== AT DATA EMBEDDING BREAKPOINT ===\n")
+        print(f"=== AT DATA EMBEDDING BREAKPOINT:\n{tokens=}")
         # pdb.set_trace()
 
         # embed all the integers up front and all at once for efficiency
-        emb = self.wte(idx) # (b, t, n_embd)
+        emb = self.wte(tokens) # (b, t, n_embd)
 
         # sequentially iterate over the inputs and update the RNN state each tick
         hprev = self.start.expand((b, -1)) # expand out the batch dimension
@@ -384,9 +384,9 @@ class RNN(nn.Module):
         loss = None
         if targets is not None:
             # Not very interesting since RNNs must be called one sample at a time
-            # print(f"RNN: Given {len(idx)} in idx: {idx.transpose(0,1)=}")
+            # print(f"RNN: Given {len(tokens)} in tokens: {tokens.transpose(0,1)=}")
             # print(f"\thave {len(targets)} targets: {targets.transpose(0,1)=}")
-            assert idx.shape == targets.shape, f"RNN: {idx.shape=} != {targets.shape=}"
+            assert tokens.shape == targets.shape, f"RNN: {tokens.shape=} != {targets.shape=}"
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
 
         return logits, loss
@@ -750,10 +750,10 @@ class CharDataset(Dataset):
             ixe = ix[Nix-1]
             assert ixe < len(self.lastOccurrence)
             iy0 = self.lastOccurrence[ixe]
-            print(f"getitem: distance to last occurrence of self.ints[{idx+1}] == {ixe} is {iy0}")
+            print(f"getitem: distance to last occurrence of self.ints[{idx}] == {ixe} is {iy0}")
             # pdb.set_trace()
             assert ixe == self.ints[idx], f"{ixe=} should equal {self.ints[idx]=}"
-            x = -torch.ones(N, dtype=torch.long)
+            x = torch.zeros(N, dtype=torch.long) # Cannot have -1s here because everything is a token for embedding, 0 is therefore the default input
             ixt = torch.tensor(ix, dtype=x.dtype)
             assert Nix <= N, f"ix is longer ({len(ix)}) than the specified length {N=} of the tensor x."
             xs = N-Nix # starting index for ixt in x
@@ -766,7 +766,7 @@ class CharDataset(Dataset):
             idx0 = max(0,idx - N + 1) # include as much history as we can fit into the block
             ix = self.ints[idx0:idx+1]  # all ints up to and including the latest at idx
             iy0 = self.lastOccurrence[ix[-1]]  # Using ix[-1] to safely get the last element
-            x = -torch.ones(N, dtype=torch.long)
+            x = torch.zeros(N, dtype=torch.long)
             ix_tensor = torch.tensor(ix, dtype=x.dtype)
             assert len(ix) <= N, f"ix is longer ({len(ix)}) than the specified length {N=} of the tensor x."
             x[:len(ix)] = ix_tensor
@@ -862,7 +862,11 @@ def create_datasets(input_file, data_mode, block_size):
             numExamples = 4*block_size
 
             numInts = 27 # same as original vocab_size in names.txt
-            ints = [random.randint(0, numInts-1) for _ in range(numExamples)]
+            if 1:
+                print(f"=== Generating {numInts} looping test ints")
+                ints = range(numInts)
+            else:
+                ints = [random.randint(1, numInts) for _ in range(numExamples)] # avoid 0 which means "no input"
             words = [str(i) for i in ints] # FIXME: should not need this - revise data structures
             chars = sorted(list(set(''.join(words)))) # gross - not used - just to eliminate misleading printouts
         else:
