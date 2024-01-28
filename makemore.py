@@ -357,11 +357,10 @@ class RNN(nn.Module):
         device = tokens.device
         b, t = tokens.size()
 
-        print(f"RNN: tokens shape is {tokens.shape}")
+        # print(f"RNN: tokens shape is {tokens.shape}")
         # Not true for last block: assert t == self.block_size, f"RNN: {t=} != {self.block_size=}"
 
-        print("RNN:=== AT DATA EMBEDDING BREAKPOINT ===\n")
-        print(f"=== AT DATA EMBEDDING BREAKPOINT:\n{tokens=}")
+        # print(f"RNN: === AT DATA EMBEDDING BREAKPOINT:\n{tokens=}")
         # pdb.set_trace()
 
         # embed all the integers up front and all at once for efficiency
@@ -726,9 +725,7 @@ class CharDataset(Dataset):
         # Return inputs and targets for one line of the input file (one training example).
         # print (f"__getitem__: idx = {idx}, word == {self.words[idx]}, data_mode = {self.data_mode}")
         # assert idx == self.idxp+1, f"getitem: expected {idx=} == {self.idxp+1=}"
-        print(f"getitem: {idx=}")
-        if idx != self.idxp+1:
-            print(f"getitem: expected {idx=} == {self.idxp+1=}")
+        print(f"getitem: {idx=}") # randomly jumps around, but data builds ok below
         self.idxp = idx
         if self.data_mode == DataMode.WORDS:
             word = self.words[idx].strip()
@@ -748,11 +745,17 @@ class CharDataset(Dataset):
             ix = self.ints[idx0:idx+1]  # all ints up to and including the latest at [idx]
             Nix = len(ix)
             ixe = ix[Nix-1]
-            assert ixe < len(self.lastOccurrence)
+            clipped = False
+            if ixe >= len(self.lastOccurrence):
+                print(f"*** {ixe=} >= {len(self.lastOccurrence)=} - clipping it")
+                ixe = self.lastOccurrence[-1]
+                ix[Nix-1] = ixe # make it true
+                clipped = True
             iy0 = self.lastOccurrence[ixe]
             print(f"getitem: distance to last occurrence of self.ints[{idx}] == {ixe} is {iy0}")
             # pdb.set_trace()
-            assert ixe == self.ints[idx], f"{ixe=} should equal {self.ints[idx]=}"
+            if not clipped:
+                assert ixe == self.ints[idx], f"{ixe=} == ints at {idx=} should equal self.ints[{idx}] = {self.ints[idx]}"
             x = torch.zeros(N, dtype=torch.long) # Cannot have -1s here because everything is a token for embedding, 0 is therefore the default input
             ixt = torch.tensor(ix, dtype=x.dtype)
             assert Nix <= N, f"ix is longer ({len(ix)}) than the specified length {N=} of the tensor x."
@@ -864,7 +867,7 @@ def create_datasets(input_file, data_mode, block_size):
             numInts = 27 # same as original vocab_size in names.txt
             if 1:
                 print(f"=== Generating {numInts} looping test ints")
-                ints = range(numInts)
+                ints = range(1,numInts+1)
             else:
                 ints = [random.randint(1, numInts) for _ in range(numExamples)] # avoid 0 which means "no input"
             words = [str(i) for i in ints] # FIXME: should not need this - revise data structures
