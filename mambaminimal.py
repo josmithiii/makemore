@@ -30,6 +30,11 @@ import torch.nn.functional as F
 from dataclasses import dataclass
 from einops import rearrange, repeat, einsum
 
+# JOS:
+import argparse
+import random
+# Keras only: from ann_visualizer.visualize import ann_viz;
+
 @dataclass
 class ModelArgs:
     d_model: int
@@ -55,8 +60,11 @@ class ModelArgs:
                                 - self.vocab_size % self.pad_vocab_size_multiple)
 
 
+# For visualizations:
+defaultArgs = ModelArgs(d_model=16, n_layer=4, vocab_size=27, block_size=32)
+
 class Mamba(nn.Module):
-    def __init__(self, args: ModelArgs):
+    def __init__(self, args: ModelArgs = defaultArgs):
         """Full Mamba model."""
         super().__init__()
         self.args = args
@@ -349,3 +357,86 @@ class RMSNorm(nn.Module):
         output = x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps) * self.weight
 
         return output
+
+if __name__ == '__main__':
+
+    # parse command line args
+    parser = argparse.ArgumentParser(description="Make More")
+    # system/input/output
+    parser.add_argument('--input-file', '-i', type=str, default='./data/words/names.txt', help="input text file, where .txt suffix => one word per line to make more of, while .tsv => <answer><tab><prompt> each line (e.g., ListOps data)")
+    parser.add_argument('--work-dir', '-o', type=str, default='out', help="output working directory")
+    parser.add_argument('--data-mode', type=str, default="words", help="data type: (words|qa|distance|distance-exp)")
+    # input/output sizes and dimensionalities
+    parser.add_argument('--block-size', type=int, default=None, help="input block size [default = vocab_size measured from data]: (max word length + 1 | max Q+A length + 2 | max short-term memory")
+    parser.add_argument('--embedding-size', type=int, default=32, help="embedding size: (max word length + 1 | number of Answers | max_distance + 1)")
+    parser.add_argument('--logits-size', type=int, default=None, help="logits size: defaults to embedding-size")
+    # training
+    parser.add_argument('--device', type=str, default='cpu', help="device to use for compute, examples: cpu|cuda|cuda:2|mps")
+    parser.add_argument('--resume', action='store_true', help="when this flag is used, we will resume optimization from existing model in the workdir")
+    parser.add_argument('--num-workers', '-n', type=int, default=4, help="number of data workers for both train/test")
+    parser.add_argument('--max-steps', type=int, default=-1, help="max number of optimization steps to run for, or -1 for infinite.")
+    # sampling
+    parser.add_argument('--seed', type=int, default=3407, help="seed")
+    parser.add_argument('--sample-only', action='store_true', help="just sample from the model and quit, don't train")
+    parser.add_argument('--top-k', type=int, default=-1, help="top-k for sampling, -1 means no top-k")
+    # model
+    parser.add_argument('--type', type=str, default='transformer', help="model class type to use, bigram|mlp|rnn|gru|bow|transformer|mamba")
+    parser.add_argument('--n-layer', type=int, default=4, help="number of layers")
+    parser.add_argument('--n-head', type=int, default=4, help="number of heads (in a transformer)")
+    parser.add_argument('--n-embd', type=int, default=64, help="number of feature channels in the model")
+    parser.add_argument('--n-embd2', type=int, default=64, help="number of feature channels elsewhere in the model")
+    # optimization
+    parser.add_argument('--batch-size', '-b', type=int, default=8, help="batch size during optimization")
+    parser.add_argument('--learning-rate', '-l', type=float, default=5e-4, help="learning rate")
+    parser.add_argument('--weight-decay', '-w', type=float, default=0.01, help="weight decay")
+    args = parser.parse_args()
+    print(vars(args))
+
+    vocab_size = 27 # example
+    block_size = 32 # example
+    mambaConfig = ModelArgs(
+        d_model=args.n_embd,
+        n_layer=args.n_layer,
+        vocab_size=vocab_size,
+        block_size=block_size,
+        # Mamba output size == block_size because it is a sequence to sequence map => no
+        # logits_size=logits_size,
+        d_state=args.n_head, # too janky?
+        expand=2, # FIXME: bring out state-expansion-factor parameter
+        dt_rank='auto', # auto => d_model/16
+        d_conv=4, # Conv1d kernel size
+        pad_vocab_size_multiple=8, # Forces vocab_size to be a multiple of this
+        conv_bias=True,
+        bias=False)
+    
+    model = Mamba(mambaConfig)
+    
+    # Keras only: ann_viz(model)
+    
+    num = block_size
+    x = torch.tensor([random.randint(0, num//2) for _ in range(num)]).expand(1,num) # num/2 to get some repeats
+    y = model(x)
+    
+    try_torchviz = False
+    if try_torchviz:
+        from torchviz import make_dot
+        make_dot(y, params=dict(list(model.named_parameters()))).render("model_graph", format="png")
+        # N: make_dot(y).render("model_graph", format="png")
+        
+    # To try_nnviz: !nnviz thisFile:someClass
+        
+    try_torchview = False
+    if try_torchview:
+        from torchview import draw_graph
+        batch_size = 4
+        model_graph = draw_graph(model, input_size=(batch_size, 128), device='meta')
+        model_graph.visual_graph
+
+    # Assuming 'model' is your PyTorch model and 'x' is a sample input tensor
+    # N:
+    try_hiddenlayer = False
+    if try_hiddenlayer:
+        import hiddenlayer as hl
+        hl_graph = hl.build_graph(model, x)
+        hl_graph.theme = hl.graph.THEMES["blue"].copy()
+        hl_graph.save("model_graph", format="png")

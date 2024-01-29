@@ -34,7 +34,7 @@ from torch.utils.tensorboard import SummaryWriter
 # -----------------------------------------------------------------------------
 # JOS:
 
-import mambaminimal as mm # mamba-minimal.py
+import mambaminimal as mm # mambaminimal.py
 # defines class Mamba
 
 from enum import Enum
@@ -46,9 +46,14 @@ def setSeed(seed):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
 
-from torch.utils.tensorboard import SummaryWriter
-import hiddenlayer as hl
+traceTensors = False
+traceTensorsXY = True
 
+# None of these worked, but nnviz did, after creating defaultConfig below to use in "default constructors"
+# Perhaps one or more of these can work now:
+# N: from torch.utils.tensorboard import SummaryWriter
+# N: import hiddenlayer as hl
+# N: from ann_visualizer.visualize import ann_viz;
 # -----------------------------------------------------------------------------
 
 DataMode = Enum('DataMode', ['WORDS', 'QA', 'DISTANCE'])
@@ -69,6 +74,9 @@ class ModelConfig:
 
     # block_size is important for Transformer and any model that works only on one input buffer at a time
     # (no recurrence).
+
+# For visualizations:
+defaultConfig = ModelConfig(vocab_size=27, block_size=32, logits_size=27, n_layer=4, n_head=4, n_embd=16, n_embd2=16, data_mode=DataMode.WORDS)
 
 # -----------------------------------------------------------------------------
 # Transformer Language Model (*exactly* as used in GPT-2)
@@ -300,7 +308,7 @@ class RNNCell(nn.Module):
     previous time step h_{t-1} and return the resulting hidden state
     h_{t} at the current timestep
     """
-    def __init__(self, config):
+    def __init__(self, config=defaultConfig):
         super().__init__()
         self.xh_to_h = nn.Linear(config.n_embd + config.n_embd2, config.n_embd2)
 
@@ -337,13 +345,14 @@ class GRUCell(nn.Module):
 
 class RNN(nn.Module):
 
-    def __init__(self, config, cell_type):
+    def __init__(self, config=defaultConfig, cell_type='gru'):
         super().__init__()
         self.block_size = config.block_size # in
         self.vocab_size = config.vocab_size # out, but also embedding size
         self.start = nn.Parameter(torch.zeros(1, config.n_embd2)) # the starting hidden state
         self.wte = nn.Embedding(config.vocab_size+1, config.n_embd) # token embeddings table, +1 for NULL
-        print(f"\nRNN: token embedding shape is num_tokens x n_embd: {(config.vocab_size+1)=} by {config.n_embd=}")
+        if traceTensors:
+            print(f"\nRNN: token embedding shape is num_tokens x n_embd: {(config.vocab_size+1)=} by {config.n_embd=}")
         if cell_type == 'rnn':
             self.cell = RNNCell(config)
         elif cell_type == 'gru':
@@ -363,7 +372,8 @@ class RNN(nn.Module):
         # pdb.set_trace()
 
         # embed all the integers up front and all at once for efficiency
-        print(f"RNN: === AT DATA EMBEDDING BREAKPOINT:\n{tokens=}")
+        if traceTensors:
+            print(f"\nRNN: === AT DATA EMBEDDING BREAKPOINT:\n{tokens=}")
         emb = self.wte(tokens) # (b, t, n_embd)
 
         # sequentially iterate over the inputs and update the RNN state each tick
@@ -402,7 +412,7 @@ class MLP(nn.Module):
     Bengio et al. 2003 https://www.jmlr.org/papers/volume3/bengio03a/bengio03a.pdf
     """
 
-    def __init__(self, config):
+    def __init__(self, config=defaultConfig):
         super().__init__()
         self.block_size = config.block_size
         self.vocab_size = config.vocab_size
@@ -448,7 +458,7 @@ class Bigram(nn.Module):
     next character given a previous character.
     """
 
-    def __init__(self, config):
+    def __init__(self, config=defaultConfig):
         super().__init__()
         n = config.vocab_size
         self.logits = nn.Parameter(torch.zeros((n, n)))
@@ -579,15 +589,22 @@ def evaluate(model, dataset, data_mode, batch_size=50, max_batches=None, make_gr
 
     # Output model diagram if requested:
     if make_graphs:
-        writer = SummaryWriter()
-        dummy_input = torch.randn(1, len(dataset), batch_size)
-        writer.add_graph(model, dummy_input)
-        writer.close()
-        hl_graph = hl.build_graph(model, test_dataset)  # Adjust the input shape
-        hl_graph.theme = hl.graph.THEMES["blue"].copy()
-        gfname = "model_visualization"
-        hl_graph.save(gfname, format="png")
-        print(f"Written: {gfname}.png")
+
+        ann_viz(model)
+
+        trySummaryWriter = False
+        tryHiddenLayer = False
+        if trySummaryWriter:
+            writer = SummaryWriter()
+            dummy_input = torch.randn(1, len(dataset), batch_size)
+            writer.add_graph(model, dummy_input)
+            writer.close()
+        if tryHiddenLayer:
+            hl_graph = hl.build_graph(model, test_dataset)  # Adjust the input shape
+            hl_graph.theme = hl.graph.THEMES["blue"].copy()
+            gfname = "model_visualization"
+            hl_graph.save(gfname, format="png")
+            print(f"Written: {gfname}.png")
 
     doShuffle = (data_mode != DataMode.DISTANCE) # this is a memory task that shuffling would destroy
     # original: loader = DataLoader(dataset, shuffle=True, batch_size=batch_size, num_workers=0)
@@ -597,7 +614,8 @@ def evaluate(model, dataset, data_mode, batch_size=50, max_batches=None, make_gr
     for i, batch in enumerate(loader):
         batch = [t.to(args.device) for t in batch]
         X, Y = batch
-        print(f"evaluate: {X.shape=}\n{Y.shape=}")
+        if traceTensorsXY:
+            print(f"evaluate: {X.shape=}\n{Y.shape=}")
         logits, loss = model(X, Y)
         losses.append(loss.item())
         if max_batches is not None and i >= max_batches:
@@ -740,7 +758,8 @@ class CharDataset(Dataset):
         # Return inputs and targets for one line of the input file (one training example).
         # print (f"__getitem__: idx = {idx}, word == {self.words[idx]}, data_mode = {self.data_mode}")
         # assert idx == self.idxp+1, f"getitem: expected {idx=} == {self.idxp+1=}"
-        print(f"getitem: {idx=}") # randomly jumps around, but data builds ok below
+        if traceTensors:
+            print(f"getitem: {idx=}") # randomly jumps around, but data builds ok below
         self.idxp = idx
         if self.data_mode == DataMode.WORDS:
             word = self.words[idx].strip()
@@ -767,7 +786,8 @@ class CharDataset(Dataset):
                 ix[Nix-1] = ixe # make it true
                 clipped = True
             iy0 = self.lastOccurrence[ixe]
-            print(f"getitem: distance to last occurrence of self.ints[{idx}] == {ixe} is {iy0}")
+            if traceTensors:
+                print(f"getitem: distance to last occurrence of self.ints[{idx}] == {ixe} is {iy0}")
             # pdb.set_trace()
             if not clipped:
                 assert ixe == self.ints[idx], f"{ixe=} == ints at {idx=} should equal self.ints[{idx}] = {self.ints[idx]}"
@@ -880,7 +900,7 @@ def create_datasets(input_file, data_mode, block_size):
             numExamples = 4*block_size
 
             numInts = 27 # same as original vocab_size in names.txt
-            if 1:
+            if 0:
                 print(f"=== Generating {numInts} looping test ints")
                 ints = range(1,numInts+1)
             else:
@@ -1126,10 +1146,11 @@ if __name__ == '__main__':
         batch = [t.to(args.device) for t in batch] # for each tensor t in batch
         X, Y = batch
         assert X.shape == Y.shape, f"{X.shape=} != {Y.shape=}"
-        print(f"batch is type {type(batch)} with length {len(batch)}")
-        print(f"{X.shape=}, {Y.shape=}")
-        print(f"X:\n\t{X=}")
-        print(f"Y:\n\t{Y=}")
+        if traceTensors:
+            print(f"\nbatch is type {type(batch)} with length {len(batch)}")
+            print(f"{X.shape=}, {Y.shape=}")
+            print(f"X:\n\t{X=}")
+            print(f"Y:\n\t{Y=}")
 
         # feed into the model
         logits, loss = model(X, Y)
