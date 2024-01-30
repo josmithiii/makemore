@@ -47,7 +47,7 @@ def setSeed(seed):
     torch.cuda.manual_seed(seed)
 
 traceTensors = False
-traceTensorsXY = True
+traceTensorsXY = False
 
 # None of these worked, but nnviz did, after creating defaultConfig below to use in "default constructors"
 # Perhaps one or more of these can work now:
@@ -524,7 +524,7 @@ def print_samples(num=10):
             X_init = torch.tensor([random.randint(0, num/2) for _ in range(num)]).expand(1,num) # num/2 to get some repeats
             print(f"X_init.shape: {X_init.shape=}")
             print(f"X_init[{k}]:\n\t{X_init=}")
-            X_true, _ = lastOccurrenceDistance(torch.flatten(X_init).tolist(), block_size)
+            X_true = lastOccurrenceDistances(torch.flatten(X_init).tolist())
             print(f"X_true:\n\t{X_true=}")
             # Initialize with one block, and then generate another
             X_samp = generate(model, X_init, block_size, temperature=0.0, do_sample=False, top_k=None).to('cpu')
@@ -628,45 +628,37 @@ def evaluate(model, dataset, data_mode, batch_size=50, max_batches=None, make_gr
 # -----------------------------------------------------------------------------
 # helper functions for creating the training and test Datasets that emit words
 
-def lastOccurrenceDistance(ints, max_distance):
+def lastOccurrenceDistances(ints):
     """
-    # Example usage:
+    Calculate the distance from the last occurrence of each element in the list:
+    
+    Args:
+    ints (list of int): A list of integers.
+
+    Returns:
+    lastOccurrenceDistances (list of int):
+      lastOccurrenceDistances[i] = distance backwards to last occurrence of i, or 0 if i is new.
+
+    Example usage:
     ints = [1, 2, 3, 2, 4, 1, 2, 3, 4, 2]
-    max_distance = 5
-    distances = lastOccurrenceDistance(ints, max_distance)
+    distances = lastOccurrenceDistances(ints)
     print("ints:", ints)
     print("Distances:", distances)
     """
     nints = len(ints)
-    # print(f"lastOccurrenceDistance: Received {nints} ints:\n{ints=}")
-    lastOccurrence = [0] * nints
-    # New version by ChatGPT-4T:
-    lastSeen = {}  # Dictionary to track the last seen index of each item
-    for i, itm in enumerate(ints):
-        if itm in lastSeen:
-            # Calculate distance from the last occurrence, capped at max_distance - 1
-            dist = min(i - lastSeen[itm], max_distance - 1)
-            lastOccurrence[i] = dist
-            ints[i-dist] = itm # make it true even when clipped - ASSUMES MUTABILITY OF ints
-        # Update the last seen index for the current item
-        lastSeen[itm] = i
-    # Previous version by me;
-    # for i in range(nints):
-    #     if i == 0:
-    #         continue
-    #     itm = ints[i]
-    #     for ir in reversed(range(i)):
-    #         if ints[ir] == itm:
-    #             dist = i - ir
-    #             if dist >= max_distance:
-    #                 dist = max_distance - 1
-    #                 ints[i-dist] = itm # just whack it to be true - ASSUMES MUTABILITY OF ints
-    #             lastOccurrence[i] = dist
-    #             # print(f"lastOccurrence[{i}] of {itm} is {dist} samples ago at index {ir}")
-    #             break
-    print(f"lastOccurrenceDistance: Returning {len(lastOccurrence)} distances:\n{lastOccurrence=}")
-    return lastOccurrence, ints
+    print(f"lastOccurrenceDistance: Received {nints} ints:\n{ints=}")
 
+    lastSeen = {}  # Dictionary to track the last seen index of each item
+    distances = [0 * len(ints)]  # List to store distances
+    for i, itm in enumerate(ints):
+        # Calculate distance from the last occurrence
+        lasti = lastSeen.get(itm, -1)
+        dist = i-lasti if (lasti >= 0) else 0
+        distances.append(dist)
+        lastSeen[itm] = i
+
+    print(f"lastOccurrenceDistance: Returning {len(distances)} distances:\n{distances=}")
+    return distances
 
 class CharDataset(Dataset):
 
@@ -676,17 +668,16 @@ class CharDataset(Dataset):
         if mode == DataMode.DISTANCE:
             self.ints = [int(w) for w in words]
             # print(f"ints = {self.ints}\n")
-            # self.lastOccurrence = {value: index for index, value in enumerate(self.ints)}
+            # self.lastOccurrenceDistances = {value: index for index, value in enumerate(self.ints)}
             #  == dictionary mapping each int to its last occurrence (index)
-            self.lastOccurrence, self.ints = lastOccurrenceDistance(self.ints, block_size)
-            # print(f"lastOccurrence = {self.lastOccurrence}\n")
-            print(f"maximum lastOccurrence for {len(self.ints)} ints = {max(self.lastOccurrence)}")
+            self.lastOccurrenceDistances = lastOccurrenceDistances(self.ints)
+            # print(f"lastOccurrence = {self.lastOccurrenceDistances}\n")
+            print(f"maximum lastOccurrence for {len(self.ints)} ints = {max(self.lastOccurrenceDistances)}")
         self.chars = chars     # Set of all chars used in words
         self.block_size = block_size # number of inputs (typically 1 for RNNs, max_word_length+1 for transformers (WORDS), etc.
         self.stoi = {ch:i+1 for i,ch in enumerate(chars)} # +1 to reserve 0 for padding char
         self.itos = {i:s for s,i in self.stoi.items()} # inverse mapping
         self.unknown_index = -1
-        self.idxp = -1
 
     def __len__(self):
         return len(self.words)
@@ -757,15 +748,13 @@ class CharDataset(Dataset):
     def __getitem__(self, idx): # CharDataset.__getitem__: idx is an int addressing one word (line) in input:
         # Return inputs and targets for one line of the input file (one training example).
         # print (f"__getitem__: idx = {idx}, word == {self.words[idx]}, data_mode = {self.data_mode}")
-        # assert idx == self.idxp+1, f"getitem: expected {idx=} == {self.idxp+1=}"
         if traceTensors:
-            print(f"getitem: {idx=}") # randomly jumps around, but data builds ok below
-        self.idxp = idx
+            print(f"getitem: {idx=}") # randomly jumps among batches, but data builds ok below
+        N = self.block_size
         if self.data_mode == DataMode.WORDS:
             word = self.words[idx].strip()
             assert word[0] != '|', f"ListOps input format not supported by data-mode WORDS"
             ix = self.encode(word) # tensor of type long
-            N = self.block_size
             assert len(ix) <= N, f"getitem: input WORD of length {len(ix)} overflows input buffer {self.block_size=}"
             x = torch.zeros(N, dtype=torch.long)
             y = torch.zeros(N, dtype=torch.long)
@@ -774,36 +763,24 @@ class CharDataset(Dataset):
             y[:Nix] = ix     # Copy 'ix' into 'y' starting at index 0: [ix0, ix1, ix2, ..., ixNM1,     0, 0, 0, ... 0]
             y[Nix+1:] = -1   # index -1 will mask the loss at the inactive locations
         elif self.data_mode == DataMode.DISTANCE: # randomly ordered ints, right-justified in the block
-            N = self.block_size
-            idx0 = max(0,idx - N + 1) # include as much history as we can fit into the block
-            ix = self.ints[idx0:idx+1]  # all ints up to and including the latest at [idx]
-            Nix = len(ix)
-            ixe = ix[Nix-1]
-            clipped = False
-            if ixe >= len(self.lastOccurrence):
-                print(f"*** {ixe=} >= {len(self.lastOccurrence)=} - clipping it")
-                ixe = self.lastOccurrence[-1]
-                ix[Nix-1] = ixe # make it true
-                clipped = True
-            iy0 = self.lastOccurrence[ixe]
+            iy0 = self.lastOccurrenceDistances[idx]
             if traceTensors:
-                print(f"getitem: distance to last occurrence of self.ints[{idx}] == {ixe} is {iy0}")
-            # pdb.set_trace()
-            if not clipped:
-                assert ixe == self.ints[idx], f"{ixe=} == ints at {idx=} should equal self.ints[{idx}] = {self.ints[idx]}"
+                print(f"getitem: distance to last occurrence of self.ints[{idx}] is {iy0}")
             x = torch.zeros(N, dtype=torch.long) # Cannot have -1s here because everything is a token for embedding, 0 is therefore the default input
+            idx0 = max(0,idx - N + 1) # include as much history as we can fit into the block == block or partial block
+            ix = self.ints[idx0:idx+1]  # all ints up to and including the latest at [idx]
             ixt = torch.tensor(ix, dtype=x.dtype)
-            assert Nix <= N, f"ix is longer ({len(ix)}) than the specified length {N=} of the tensor x."
-            xs = N-Nix # starting index for ixt in x
+            xs = N-len(ix) # starting index for ixt in x
             x[xs:] = ixt
             y = -torch.ones(N, dtype=torch.long)
-            assert iy0 < self.block_size, f"FIXME: Must embed out to MAX MEMORY for DISTANCE"
+            if iy0 >= self.block_size:
+                print(f"NOTE: distance to previous instance of self.ints[{idx}] is {iy0} which exceeds {self.block_size=}")
             y[N-1] = iy0 # last element contains the answer (distance back to the last occurrence of latest input int)
         elif self.data_mode == DataMode.DISTANCE_LEFT_JUSTIFIED: # randomly ordered ints
             N = self.block_size
             idx0 = max(0,idx - N + 1) # include as much history as we can fit into the block
             ix = self.ints[idx0:idx+1]  # all ints up to and including the latest at idx
-            iy0 = self.lastOccurrence[ix[-1]]  # Using ix[-1] to safely get the last element
+            iy0 = self.lastOccurrenceDistances[ix[-1]]  # Using ix[-1] to safely get the last element
             x = torch.zeros(N, dtype=torch.long)
             ix_tensor = torch.tensor(ix, dtype=x.dtype)
             assert len(ix) <= N, f"ix is longer ({len(ix)}) than the specified length {N=} of the tensor x."
@@ -1039,7 +1016,7 @@ if __name__ == '__main__':
     parser.add_argument('--n-embd', type=int, default=64, help="number of feature channels in the model")
     parser.add_argument('--n-embd2', type=int, default=64, help="number of feature channels elsewhere in the model")
     # optimization
-    parser.add_argument('--batch-size', '-b', type=int, default=8, help="batch size during optimization")
+    parser.add_argument('--batch-size', '-b', type=int, default=1, help="batch size during optimization")
     parser.add_argument('--learning-rate', '-l', type=float, default=5e-4, help="learning rate")
     parser.add_argument('--weight-decay', '-w', type=float, default=0.01, help="weight decay")
     args = parser.parse_args()
