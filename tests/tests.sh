@@ -13,7 +13,7 @@ DISTANCEDIR=$DATADIR/distance
 
 WORDS_DATA="$WORDSDIR/names.txt"
 LISTOPS_DATA="$LISTOPSDIR/train_d8.tsv"
-DISTANCE_DATA="DISTANCEDIR/dist1.txt"
+DISTANCE_DATA="$DISTANCEDIR/dist1.txt"
 
 python $MAKEMORE --input "$WORDS_DATA" --type gru --max-steps 210 && \
 python $MAKEMORE --input "$WORDS_DATA" --data-mode "words" --type transformer --max-steps 210 && \
