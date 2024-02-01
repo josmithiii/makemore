@@ -550,7 +550,7 @@ def print_word_samples(num=10):
 
 @torch.inference_mode()
 def evaluate(model, dataset, data_mode, batch_size=50, max_batches=None, make_graphs=False, num_print=0):
-    model.eval()
+    model.eval() # set evaluation mode
 
     # Output model diagram if requested:
     if make_graphs:
@@ -587,9 +587,11 @@ def evaluate(model, dataset, data_mode, batch_size=50, max_batches=None, make_gr
             final_logits = logits[:, -1, :] # b t v -> b v where v = vocab_size or num-logits
             probs = F.softmax(final_logits, dim=-1) # logits to probabilities
             _, idx_best = torch.topk(probs, k=1, dim=-1) # find the index of maximum probability in each batch element
-            for p in i*batch_size + range(min(num_print,batch_size)):
-                print("evaluate: X[{p}]:\n{X}\nY[{p}]:\n{Y}\nYh[{p}]:{Yh}")
-        num_print -= batch_size
+            Yh = idx_best
+            for p in range(min(num_print,batch_size)):
+                bp = p + i*batch_size
+                print(f"\nevaluate:\nX[{bp}]:\n{X}\nY[{bp}]:\n{Y}\nYh[{bp}]:{Yh}")
+            num_print -= batch_size
         if max_batches is not None and i >= max_batches:
             break
     mean_loss = torch.tensor(losses).mean().item()
@@ -1128,12 +1130,10 @@ if __name__ == '__main__':
         if step % 10 == 0:
             print(f"step {step} | loss {loss.item():.4f} | step time {(t1-t0)*1000:.2f}ms")
 
-        # graph the model
-        # evaluate(model, test_dataset, data_mode, batch_size=args.batch_size, max_batches=1, make_graphs=True)
-        evaluate(model, test_dataset, data_mode, batch_size=args.batch_size, max_batches=1, make_graphs=False)
+        # graph the model: evaluate(model, test_dataset, data_mode, batch_size=args.batch_size, max_batches=1, make_graphs=True)
 
         # evaluate the model
-        if step > 0 and step % 500 == 0:
+        if step > 0 and step % 200 == 0:
             train_loss = evaluate(model, train_dataset, data_mode, batch_size=args.batch_size, max_batches=10)
             test_loss  = evaluate(model, test_dataset, data_mode, batch_size=args.batch_size, max_batches=10, num_print=10)
             writer.add_scalar("Loss/train", train_loss, step)
