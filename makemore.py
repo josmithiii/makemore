@@ -56,7 +56,7 @@ traceTensorsXY = False
 # N: from ann_visualizer.visualize import ann_viz;
 # -----------------------------------------------------------------------------
 
-DataMode = Enum('DataMode', ['WORDS', 'QA', 'DISTANCE'])
+DataMode = Enum('DataMode', ['WORDS', 'QA', 'DISTANCE', 'DISTANCE_LEFT_JUSTIFIED'])
 
 @dataclass
 class ModelConfig:
@@ -397,6 +397,7 @@ class RNN(nn.Module):
             # print(f"\thave {len(targets)} targets: {targets.transpose(0,1)=}")
             assert tokens.shape == targets.shape, f"RNN: {tokens.shape=} != {targets.shape=}"
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+            # print(f"RNN: loss={loss}, {logits.shape=}")
 
         return logits, loss
 
@@ -482,66 +483,91 @@ class Bigram(nn.Module):
 # helper functions for evaluating and sampling from the model
 
 @torch.no_grad()
-def generate(model, idx, max_new_tokens, temperature=1.0, do_sample=False, top_k=None):
+def generate(model, idx, max_new_tokens, temperature=1.0, do_sample=False, top_k=None, regress=True):
     """
     Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
-    the sequence max_new_tokens times, feeding the predictions back into the model each time.
+    the sequence max_new_tokens times, feeding the predictions back into the model each time if regress==True.
+    A list of max_new_tokens tokens is returned.
     Most likely you'll want to make sure to be in model.eval() mode of operation for this.
+    If regress==False, then idx should contain buffer_size + max_new_tokens inputs (no autoregression).
     """
     block_size = model.get_block_size()
-    for _ in range(max_new_tokens):
-        # if the sequence context is growing too long we must crop it at block_size
-        idx_cond = idx if idx.size(1) <= block_size else idx[:, -block_size:]
-        # forward the model to get the logits for the index in the sequence
-        logits, _ = model(idx_cond)
-        # pluck the logits at the final step and scale by desired temperature
-        logits = logits[:, -1, :] / temperature
-        # optionally crop the logits to only the top k options
-        if top_k is not None:
-            v, _ = torch.topk(logits, top_k)
-            logits[logits < v[:, [-1]]] = -float('Inf')
-        # apply softmax to convert logits to (normalized) probabilities
-        probs = F.softmax(logits, dim=-1)
-        # either sample from the distribution or take the most likely element
-        if do_sample:
-            idx_next = torch.multinomial(probs, num_samples=1)
-        else:
-            _, idx_next = torch.topk(probs, k=1, dim=-1)
-        # append sampled index to the running sequence and continue
-        idx = torch.cat((idx, idx_next), dim=1)
-
+    if regress: # e.g., WORDS
+        for _ in range(max_new_tokens):
+            # if the sequence context is growing too long we must crop it at block_size
+            idx_cond = idx if idx.size(1) <= block_size else idx[:, -block_size:]
+            # forward the model to get the logits for the index in the sequence
+            logits, _ = model(idx_cond)
+            print(f"generate: regressing:\n\t{idx_cond.shape=}\n\t{logits.shape=}")
+            # pluck the logits (b, t, d) at the final step and scale by desired temperature
+            logits = logits[:, -1, :] / max(temperature, 1.0e-7)
+            # optionally crop the logits to only the top k options
+            if top_k is not None:
+                v, _ = torch.topk(logits, top_k)
+                logits[logits < v[:, [-1]]] = -float('Inf')
+            # apply softmax to convert logits to (normalized) probabilities
+            probs = F.softmax(logits, dim=-1)
+            # either sample from the distribution or take the most likely element
+            if do_sample:
+                idx_next = torch.multinomial(probs, num_samples=1)
+            else:
+                _, idx_next = torch.topk(probs, k=1, dim=-1)
+            # append sampled index to the running sequence and continue
+            idx = torch.cat((idx, idx_next), dim=1)
+    else: # e.g., DISTANCE
+        for _ in range(max_new_tokens):
+            idx_cond = idx if idx.size(1) <= block_size else idx[:, :block_size]
+            logits, _ = model(idx_cond) # forward the model to get the logits for the index in the sequence
+            print(f"generate: not regressing:\n\t{idx_cond.shape=}\n\t{logits.shape=}")
+            logits = logits[:, -1, :] / max(temperature, 1.0e-7) # pluck the logits (b, t, d) at the final t and scale by temp
+            # optionally crop the logits to only the top k options
+            if top_k is not None:
+                v, _ = torch.topk(logits, top_k)
+                logits[logits < v[:, [-1]]] = -float('Inf')
+            # apply softmax to convert logits to (normalized) probabilities
+            probs = F.softmax(logits, dim=-1)
+            # either sample from the distribution or take the most likely element
+            if do_sample:
+                idx_next = torch.multinomial(probs, num_samples=1)
+            else:
+                _, idx_next = torch.topk(probs, k=1, dim=-1)
+            # append sampled index to the running sequence and continue
+            idx = torch.cat((idx, idx_next), dim=1)
     return idx
 
 @torch.no_grad()
 def print_samples(num=10):
     """ samples from the model and pretty prints the decoded samples """
-    X_init = torch.zeros(num, 1, dtype=torch.long).to(args.device)
     print(f"print_samples: {data_mode=}")
     setSeed(43)
     if data_mode == DataMode.DISTANCE:
-        nBlocks = 1 + num // block_size
-        for k in range(nBlocks):
-            X_init = torch.tensor([random.randint(0, num/2) for _ in range(num)]).expand(1,num) # num/2 to get some repeats
+        X_init = torch.zeros(num, block_size, dtype=torch.long).to(args.device) # num examples each with a full block of initialization
+        for k in range(num): # generate num examples in parallel as one batch
+            num_inputs = block_size + num # The first block_size inputs fill the input buffer, and that window slides forward num steps
+            interval = num_inputs / 4 # less than num_inputs makes repeats more likely
+            # old and wrong: X_init = torch.tensor([random.randint(0, interval) for _ in range(num_inputs)]).expand(1,num_inputs)
+            # me: X_init = torch.tensor([[random.randint(0, interval) for _ in range(num_inputs)] for _ in range(num)])
+            # GPT4T says:
+            X_init = torch.tensor([[random.randint(0, interval) for _ in range(num_inputs)] for _ in range(num)])
+            # If you need a tensor of floats
+            # X_init = torch.tensor([[random.randint(0, interval) for _ in range(num_inputs)] for _ in range(num)], dtype=torch.float32)
+            # Alternatively, using PyTorch for random number generation (for floats)
+            # X_init = torch.randint(0, interval, (num, num_inputs), dtype=torch.float32)
             print(f"X_init.shape: {X_init.shape=}")
-            print(f"X_init[{k}]:\n\t{X_init=}")
+            print(f"X_init[{k}]:\n\t{X_init}")
             X_true = lastOccurrenceDistances(torch.flatten(X_init).tolist())
-            print(f"X_true:\n\t{X_true=}")
-            # Initialize with one block, and then generate another
-            X_samp = generate(model, X_init, block_size, temperature=0.0, do_sample=False, top_k=None).to('cpu')
-            print(f"X_samp.shape (two blocks: initial + predicted): {X_samp.shape=}")
-            print(f"X_samp[{k}]:\n\t{X_samp=}")
-            print(f"X_samp.shape: {X_samp.shape=}")
+            print(f"X_true:\n\t{X_true}")
+            X_samp = generate(model, X_init, block_size, temperature=0.0, do_sample=False, top_k=None, regress=False).to('cpu')
+            print(f"X_samp[{k}].shape:\n\t{X_samp.shape}")
+            print(f"X_samp[{k}]:\n\t{X_samp}")
             max_values, max_indices = torch.max(X_samp, dim=1)
-            print(f"X_samp max indices:\n\t{max_indices=}")
+            print(f"X_samp max indices:\n\t{max_indices}")
             steps = config.output_size - 1 # -1 because we already start with <START> token (index 0)
             X_samp = generate(model, X_init, steps, do_sample=True).to('cpu')
             distances = []
             for i in range(X_samp.size(0)):
                 # get the i'th row of sampled integers, as python list
-                row = X_samp[i, 1:].tolist() # note: we need to crop out the first <START> token
-                # token 0 is the <STOP> token, so we crop the output sequence at that point
-                crop_index = row.index(0) if 0 in row else len(row)
-                row = row[:crop_index]
+                row = X_samp[i, 1:].tolist()
                 dist_samp = train_dataset.max_index(row)
                 distances.append(dist_samp)
             print('-'*80)
@@ -549,39 +575,36 @@ def print_samples(num=10):
             for dist in distances:
                 print(dist)
             print('-'*80)
-        return
     elif data_mode == DataMode.QA:
         print(f"print_samples: Write model samples for QA case")
-        return
     elif data_mode == DataMode.WORDS:
-        X_init = torch.zeros(num, 1, dtype=torch.long).to(args.device)
-        # processing below:
+        X_init = torch.zeros(num, 1, dtype=torch.long).to(args.device) # generate num examples in parallel as one batch
+        top_k = args.top_k if args.top_k != -1 else None
+        steps = config.output_size - 1 # == max_word_length (-1 because we added 1 for <START> token (index 0))
+        X_samp = generate(model, X_init, steps, top_k=top_k, do_sample=True).to('cpu')
+        train_samples, test_samples, new_samples = [], [], []
+        assert X_samp.size(0) == num, f"I thought {num=} would equal {X_samp.size(0)=}"
+        for i in range(X_samp.size(0)): # loop over generated samples == batch size
+            # get the i'th row of sampled integers, as a python list:
+            row = X_samp[i, 1:].tolist() # initial <START> token omitted
+            crop_index = row.index(0) if 0 in row else len(row) # find the <STOP> token
+            row = row[:crop_index] # take everything up to but not including <STOP> token
+            word_samp = train_dataset.decode_word(row) # convert the list of integers to a string
+            # separately track samples that we have and have not seen before
+            if train_dataset.contains(word_samp):
+                train_samples.append(word_samp)
+            elif test_dataset.contains(word_samp):
+                test_samples.append(word_samp)
+            else:
+                new_samples.append(word_samp)
+        print('-'*80)
+        for lst, desc in [(train_samples, 'in train'), (test_samples, 'in test'), (new_samples, 'new')]:
+            print(f"{len(lst)} samples that are {desc}:")
+            for word in lst:
+                print(word)
+        print('-'*80)
     else:
         assert False, f"Unrecognized data mode {data_mode=}"
-    top_k = args.top_k if args.top_k != -1 else None
-    steps = config.output_size - 1 # -1 because we already start with <START> token (index 0)
-    X_samp = generate(model, X_init, steps, top_k=top_k, do_sample=True).to('cpu')
-    train_samples, test_samples, new_samples = [], [], []
-    for i in range(X_samp.size(0)):
-        # get the i'th row of sampled integers, as python list
-        row = X_samp[i, 1:].tolist() # note: we need to crop out the first <START> token
-        # token 0 is the <STOP> token, so we crop the output sequence at that point
-        crop_index = row.index(0) if 0 in row else len(row)
-        row = row[:crop_index]
-        word_samp = train_dataset.decode(row)
-        # separately track samples that we have and have not seen before
-        if train_dataset.contains(word_samp):
-            train_samples.append(word_samp)
-        elif test_dataset.contains(word_samp):
-            test_samples.append(word_samp)
-        else:
-            new_samples.append(word_samp)
-    print('-'*80)
-    for lst, desc in [(train_samples, 'in train'), (test_samples, 'in test'), (new_samples, 'new')]:
-        print(f"{len(lst)} samples that are {desc}:")
-        for word in lst:
-            print(word)
-    print('-'*80)
 
 @torch.inference_mode()
 def evaluate(model, dataset, data_mode, batch_size=50, max_batches=None, make_graphs=False):
@@ -589,9 +612,7 @@ def evaluate(model, dataset, data_mode, batch_size=50, max_batches=None, make_gr
 
     # Output model diagram if requested:
     if make_graphs:
-
         ann_viz(model)
-
         trySummaryWriter = False
         tryHiddenLayer = False
         if trySummaryWriter:
@@ -646,10 +667,10 @@ def lastOccurrenceDistances(ints):
     print("Distances:", distances)
     """
     nints = len(ints)
-    print(f"lastOccurrenceDistance: Received {nints} ints:\n{ints=}")
+    print(f"lastOccurrenceDistance: Received {nints} ints:\n{ints}")
 
     lastSeen = {}  # Dictionary to track the last seen index of each item
-    distances = [0 * len(ints)]  # List to store distances
+    distances = []  # List to store distances
     for i, itm in enumerate(ints):
         # Calculate distance from the last occurrence
         lasti = lastSeen.get(itm, -1)
@@ -657,7 +678,7 @@ def lastOccurrenceDistances(ints):
         distances.append(dist)
         lastSeen[itm] = i
 
-    print(f"lastOccurrenceDistance: Returning {len(distances)} distances:\n{distances=}")
+    print(f"lastOccurrenceDistance: Returning {len(distances)} distances:\n{distances}")
     return distances
 
 class CharDataset(Dataset):
@@ -722,7 +743,7 @@ class CharDataset(Dataset):
         ixt = torch.tensor(ix,dtype=torch.long)
         return ixt
 
-    def decode(self, ix):
+    def decode_word(self, ix):
         word = ''.join(self.itos[i] for i in ix)
         return word
 
@@ -858,8 +879,17 @@ def create_datasets(input_file, data_mode, block_size):
     chars = sorted(list(set(''.join(words)))) # all the possible characters
     vocab_size = len(chars) + 1 # add one for special separation token
     if block_size == None:
-        block_size = vocab_size
-        print(f"create_datasets: block_size set to {vocab_size=}")
+        if data_mode == DataMode.WORDS: # original makemore case - input = list of words such as names
+            block_size = vocab_size
+            print(f"create_datasets: block_size set to {vocab_size=} for WORDS")
+        elif data_mode == DataMode.DISTANCE or data_mode == DataMode.DISTANCE_LEFT_JUSTIFIED:
+            block_size = 32
+            print(f"create_datasets: block_size arbitrarily set to {block_size} for {data_mode}")
+        elif data_mode == DataMode.QA: # ListOps case [added to makemore]
+            block_size = max(len(w) for w in words)
+            print(f"create_datasets: block_size set to measured maximum example length {block_size} for QA")
+        else:
+            assert False, f"create_datasets: unknown DataMode {data_mode}"
 
     basename = os.path.basename(input_file)
     name,ext = os.path.splitext(basename)
@@ -923,7 +953,6 @@ def create_datasets(input_file, data_mode, block_size):
 
         # print("=== AT DATA LOADING BREAKPOINT ===")
         # pdb.set_trace()
-
 
     print(f"number of examples in the dataset: {len(words)}")
     print(f"input block size: {block_size}")
@@ -1046,7 +1075,7 @@ if __name__ == '__main__':
 
     block_size = args.block_size
 
-    train_dataset, test_dataset, block_size = create_datasets(args.input_file, data_mode, args.block_size)
+    train_dataset, test_dataset, block_size = create_datasets(args.input_file, data_mode, block_size)
 
     embedding_size = args.embedding_size
     logits_size = args.logits_size

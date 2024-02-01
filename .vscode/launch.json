@@ -13,9 +13,9 @@
                 "--data-mode",
                 "distance",
                 "--batch-size",
-                "4",
+                "1",
                 "--block-size",
-                "8",
+                "32", // must be at least max word length
                 "--type",
                 "gru",
                 "--max-steps",
