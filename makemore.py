@@ -47,7 +47,9 @@ def setSeed(seed):
     torch.cuda.manual_seed(seed)
 
 traceTensors = False
-traceTensorsXY = False
+
+#traceTensorsXY = False
+traceTensorsXY = True
 
 # None of these worked, but nnviz did, after creating defaultConfig below to use in "default constructors"
 # Perhaps one or more of these can work now:
@@ -273,7 +275,7 @@ class BoW(nn.Module):
 
         device = idx.device
         b, t = idx.size()
-        assert t <= self.block_size, f"Cannot forward sequence of length {t}, block size is only {self.block_size}"
+        assert t <= self.block_size, f"BoW: Cannot forward sequence of length {t}, block size is only {self.block_size}"
         pos = torch.arange(0, t, dtype=torch.long, device=device).unsqueeze(0) # shape (1, t)
 
         # forward the token and position embedding layers
@@ -348,7 +350,8 @@ class RNN(nn.Module):
     def __init__(self, config=defaultConfig, cell_type='gru'):
         super().__init__()
         self.block_size = config.block_size # in
-        self.vocab_size = config.vocab_size # out, but also embedding size
+        self.logits_size = config.logits_size # out
+        self.vocab_size = config.vocab_size # embedding size
         self.start = nn.Parameter(torch.zeros(1, config.n_embd2)) # the starting hidden state
         self.wte = nn.Embedding(config.vocab_size+1, config.n_embd) # token embeddings table, +1 for NULL
         if traceTensors:
@@ -357,7 +360,7 @@ class RNN(nn.Module):
             self.cell = RNNCell(config)
         elif cell_type == 'gru':
             self.cell = GRUCell(config)
-        self.lm_head = nn.Linear(config.n_embd2, self.vocab_size)
+        self.lm_head = nn.Linear(config.n_embd2, self.logits_size)
 
     def get_block_size(self):
         return self.block_size
@@ -396,6 +399,8 @@ class RNN(nn.Module):
             # print(f"RNN: Given {len(tokens)} in tokens: {tokens.transpose(0,1)=}")
             # print(f"\thave {len(targets)} targets: {targets.transpose(0,1)=}")
             assert tokens.shape == targets.shape, f"RNN: {tokens.shape=} != {targets.shape=}"
+            # print(f"{config.logits_size=}")
+            # print(f"{logits.shape=}")
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
             # print(f"RNN: loss={loss}, {logits.shape=}")
 
@@ -620,7 +625,9 @@ def lastOccurrenceDistances(ints):
     print("Distances:", distances)
     """
     nints = len(ints)
-    print(f"lastOccurrenceDistance: Received {nints} ints:\n{ints}")
+    print(f"lastOccurrenceDistance: Received {nints} ints")
+    if traceTensors:
+        print(f"\t{ints=}")
 
     lastSeen = {}  # Dictionary to track the last seen index of each item
     distances = []  # List to store distances
@@ -631,7 +638,9 @@ def lastOccurrenceDistances(ints):
         distances.append(dist)
         lastSeen[itm] = i
 
-    print(f"lastOccurrenceDistance: Returning {len(distances)} distances:\n{distances}")
+    if traceTensors:
+        print(f"lastOccurrenceDistance: Returning {len(distances)} distances:\n{distances}")
+
     return distances
 
 class CharDataset(Dataset):
@@ -646,7 +655,9 @@ class CharDataset(Dataset):
             #  == dictionary mapping each int to its last occurrence (index)
             self.lastOccurrenceDistances = lastOccurrenceDistances(self.ints)
             # print(f"lastOccurrence = {self.lastOccurrenceDistances}\n")
-            print(f"maximum lastOccurrence for {len(self.ints)} ints = {max(self.lastOccurrenceDistances)}")
+            maxLastOccurrence = max(self.lastOccurrenceDistances)
+            print(f"maximum lastOccurrence for {len(self.ints)} ints = {maxLastOccurrence}")
+            # assert maxLastOccurrence <= logits_size
         self.chars = chars     # Set of all chars used in words
         self.block_size = block_size # number of inputs (typically 1 for RNNs, max_word_length+1 for transformers (WORDS), etc.
         self.stoi = {ch:i+1 for i,ch in enumerate(chars)} # +1 to reserve 0 for padding char
@@ -747,6 +758,7 @@ class CharDataset(Dataset):
             xs = N-len(ix) # starting index for ixt in x
             x[xs:] = ixt
             y = -torch.ones(N, dtype=torch.long)
+            # Only a problem for transformer:
             if iy0 >= self.block_size:
                 print(f"NOTE: distance to previous instance of self.ints[{idx}] is {iy0} which exceeds {self.block_size=}")
             y[N-1] = iy0 # last element contains the answer (distance back to the last occurrence of latest input int)
@@ -855,9 +867,11 @@ def create_datasets(input_file, data_mode, block_size):
         if name == 'names': # original makemore default
             print(f"create_datasets: Generating DISTANCE DATA AUTOMATICALLY since no input DISTANCE data file-name specified")
 
-            # numExamples = 32033 # same as original names.txt why not
-            print(f"create_datasets: *** USING FOUR-BLOCK DATA SET FOR TESTING ***")
-            numExamples = 4*block_size
+            if block_size == 8 and batch_size == 1: # doing a small toy example
+                print(f"create_datasets: *** USING FOUR-BLOCK DATA SET FOR TESTING ***")
+                numExamples = 4*block_size
+            else:
+                numExamples = 32033 # same as original names.txt why not
 
             numInts = 27 # same as original vocab_size in names.txt
             if 0:
@@ -871,7 +885,10 @@ def create_datasets(input_file, data_mode, block_size):
             ints = [int(w) for w in words]
         max_int = max(ints)
         max_word_length = block_size # number of samples delay supported
-        print(f"create_datasets: DISTANCE data_mode:\n\twords = {words}\n\tints = {ints}\n\tmax_int = {max_int}\n")
+        print(f"create_datasets: DISTANCE data_mode")
+        #print(f"\twords = {words}")
+        #print(f"\tints = {ints}")
+        print(f"\tmax_int = {max_int}")
     elif data_mode == DataMode.QA: # ListOps case [added to makemore]
         assert ext == '.tsv', "DataMode.QA requires .tsv input format"
         lines = words # Each line is a complete ListOps example in the format "|solution|problem"
@@ -927,9 +944,10 @@ def create_datasets(input_file, data_mode, block_size):
     print(f"split up the dataset into {len(train_words)} training examples and {len(test_words)} test examples")
 
     # wrap in dataset objects
+
     train_dataset = CharDataset(data_mode, train_words, chars, block_size)
     test_dataset = CharDataset(data_mode, test_words, chars, block_size)
-
+    
     return train_dataset, test_dataset, block_size
 
 from torch.utils.data import Sampler
@@ -1039,6 +1057,10 @@ if __name__ == '__main__':
         logits_size = vocab_size
         print(f"main: logits_size set to {vocab_size=}")
 
+#    if data_mode == DataMode.DISTANCE:
+#        maxLastOccurrence = max(Y)
+#        if max(train_dataset(:,
+
     print(f"+++ dataset determined that: {vocab_size=}")
     print(f"test_dataset: {test_dataset=}")
     # init model - FIXME: For DataMode.DISTANCE, output an unsigned int instead of (too many) logits
@@ -1134,7 +1156,9 @@ if __name__ == '__main__':
 
         # evaluate the model
         if step > 0 and step % 200 == 0:
-            train_loss = evaluate(model, train_dataset, data_mode, batch_size=args.batch_size, max_batches=10)
+            print("\n"+'-'*80+" TRAIN "+'-'*80)
+            train_loss = evaluate(model, train_dataset, data_mode, batch_size=args.batch_size, max_batches=10, num_print=10)
+            print("\n"+'-'*80+" TEST "+'-'*80)
             test_loss  = evaluate(model, test_dataset, data_mode, batch_size=args.batch_size, max_batches=10, num_print=10)
             writer.add_scalar("Loss/train", train_loss, step)
             writer.add_scalar("Loss/test", test_loss, step)
