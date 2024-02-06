@@ -48,8 +48,8 @@ def setSeed(seed):
 
 traceTensors = False
 
-#traceTensorsXY = False
-traceTensorsXY = True
+traceTensorsXY = False
+#traceTensorsXY = True
 
 # None of these worked, but nnviz did, after creating defaultConfig below to use in "default constructors"
 # Perhaps one or more of these can work now:
@@ -401,7 +401,10 @@ class RNN(nn.Module):
             assert tokens.shape == targets.shape, f"RNN: {tokens.shape=} != {targets.shape=}"
             # print(f"{config.logits_size=}")
             # print(f"{logits.shape=}")
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+            # Clip targets to ensure they are within the valid range [0, C-1]
+            num_classes = logits.size(-1)
+            targets_clipped = torch.clamp(targets, 0, num_classes - 1)
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets_clipped.view(-1), ignore_index=-1)
             # print(f"RNN: loss={loss}, {logits.shape=}")
 
         return logits, loss
@@ -595,7 +598,8 @@ def evaluate(model, dataset, data_mode, batch_size=50, max_batches=None, make_gr
             Yh = idx_best
             for p in range(min(num_print,batch_size)):
                 bp = p + i*batch_size
-                print(f"\nevaluate:\nX[{bp}]:\n{X}\nY[{bp}]:\n{Y}\nYh[{bp}]:{Yh}")
+                if traceTensorsXY:
+                    print(f"\nevaluate:\nX[{bp}]:\n{X}\nY[{bp}]:\n{Y}\nYh[{bp}]:{Yh}")
             num_print -= batch_size
         if max_batches is not None and i >= max_batches:
             break
@@ -759,8 +763,8 @@ class CharDataset(Dataset):
             x[xs:] = ixt
             y = -torch.ones(N, dtype=torch.long)
             # Only a problem for transformer:
-            if iy0 >= self.block_size:
-                print(f"NOTE: distance to previous instance of self.ints[{idx}] is {iy0} which exceeds {self.block_size=}")
+            # if iy0 >= self.block_size:
+            #     print(f"NOTE: distance to previous instance of self.ints[{idx}] is {iy0} which exceeds {self.block_size=}")
             y[N-1] = iy0 # last element contains the answer (distance back to the last occurrence of latest input int)
         elif self.data_mode == DataMode.DISTANCE_LEFT_JUSTIFIED: # randomly ordered ints
             N = self.block_size
@@ -874,6 +878,7 @@ def create_datasets(input_file, data_mode, block_size):
                 numExamples = 32033 # same as original names.txt why not
 
             numInts = 27 # same as original vocab_size in names.txt
+            print(f"create_datasets: DISTANCE benchmark: Generating {numExamples} ints between 1 and {numInts}")
             if 0:
                 print(f"create_datasets: === Generating {numInts} looping test ints")
                 ints = range(1,numInts+1)
@@ -1156,9 +1161,9 @@ if __name__ == '__main__':
 
         # evaluate the model
         if step > 0 and step % 200 == 0:
-            print("\n"+'-'*80+" TRAIN "+'-'*80)
+            # print("\n"+'-'*30+" TRAIN "+'-'*30)
             train_loss = evaluate(model, train_dataset, data_mode, batch_size=args.batch_size, max_batches=10, num_print=10)
-            print("\n"+'-'*80+" TEST "+'-'*80)
+            # print("\n"+'-'*30+" TEST "+'-'*30)
             test_loss  = evaluate(model, test_dataset, data_mode, batch_size=args.batch_size, max_batches=10, num_print=10)
             writer.add_scalar("Loss/train", train_loss, step)
             writer.add_scalar("Loss/test", test_loss, step)
