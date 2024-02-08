@@ -56,9 +56,11 @@ traceTensorsXY = False
 # N: from torch.utils.tensorboard import SummaryWriter
 # N: import hiddenlayer as hl
 # N: from ann_visualizer.visualize import ann_viz;
+
 # -----------------------------------------------------------------------------
 
 DataMode = Enum('DataMode', ['WORDS', 'QA', 'DISTANCE', 'DISTANCE_LEFT_JUSTIFIED'])
+DistanceMode = Enum('DistanceMode', ['LoopingInts', 'LastOccurrence', 'ReservedIntsRandomlyPlaced'])
 
 @dataclass
 class ModelConfig:
@@ -527,8 +529,6 @@ def generate(model, idx, max_new_tokens, temperature=1.0, do_sample=False, top_k
 @torch.no_grad()
 def print_word_samples(num=10):
     """ samples from the model and pretty prints the decoded samples """
-    print(f"print_word_samples: {data_mode=}")
-    assert data_mode == DataMode.WORDS, f"print_word_samples: {data_mode=} not expected - only WORDS expected"
     setSeed(43)
     X_init = torch.zeros(num, 1, dtype=torch.long).to(args.device) # generate num examples in parallel as one batch
     top_k = args.top_k if args.top_k != -1 else None
@@ -657,11 +657,28 @@ class CharDataset(Dataset):
             # print(f"ints = {self.ints}\n")
             # self.lastOccurrenceDistances = {value: index for index, value in enumerate(self.ints)}
             #  == dictionary mapping each int to its last occurrence (index)
-            self.lastOccurrenceDistances = lastOccurrenceDistances(self.ints)
-            # print(f"lastOccurrence = {self.lastOccurrenceDistances}\n")
-            maxLastOccurrence = max(self.lastOccurrenceDistances)
-            print(f"maximum lastOccurrence for {len(self.ints)} ints = {maxLastOccurrence}")
-            # assert maxLastOccurrence <= logits_size
+            match distanceMode: # GLOBAL VARIABLE (defined in block __main__ below)
+                case DistanceMode.LoopingInts:
+                    HERE
+                    self.occurrences = occurrences(self.ints) # index of special-int(s) occurrence in each block
+                case DistanceMode.LastOccurrence:
+                    # Original DISTANCE benchmark: recall distance to last occurrence (unbounded)
+                    self.lastOccurrenceDistances = lastOccurrenceDistances(self.ints)
+                    # print(f"lastOccurrence = {self.lastOccurrenceDistances}\n")
+                    maxLastOccurrence = max(self.lastOccurrenceDistances) # must create this many logits (possibly downsampled)
+                    print(f"maximum lastOccurrence for {len(self.ints)} ints = {maxLastOccurrence}")
+                    # assert maxLastOccurrence <= logits_size
+                case DistanceMode.ReservedIntsRandomlyPlaced:
+                    HERE
+                    self.occurrences = occurrences(self.ints)
+                    # Write 1:num_target_ints in randomized locations in a list of different random ints:
+                    block = [random.randint(1+num_target_ints, numInts) for _ in range(numExamples)] # avoid 0 and 1:num_target_ints
+                    target_indices = random.sample(range(1, block_size + 1), num_target_ints) # random locations
+                    print(f"create_datasets: {target_indices=}")
+                    # N: ints[target_indices] = range(1, num_target_ints + 1) # I want to say this, but have to iterate:
+                    for k, target_index in enumerate(target_indices):
+                        block[target_index] = k + 1 # exactly one occurrence at a random location
+                        print(f"\t: block[{target_index}] = {k+1}")
         self.chars = chars     # Set of all chars used in words
         self.block_size = block_size # number of inputs (typically 1 for RNNs, max_word_length+1 for transformers (WORDS), etc.
         self.stoi = {ch:i+1 for i,ch in enumerate(chars)} # +1 to reserve 0 for padding char
@@ -752,20 +769,37 @@ class CharDataset(Dataset):
             y[:Nix] = ix     # Copy 'ix' into 'y' starting at index 0: [ix0, ix1, ix2, ..., ixNM1,     0, 0, 0, ... 0]
             y[Nix+1:] = -1   # index -1 will mask the loss at the inactive locations
         elif self.data_mode == DataMode.DISTANCE: # randomly ordered ints, right-justified in the block
-            iy0 = self.lastOccurrenceDistances[idx]
-            if traceTensors:
-                print(f"getitem: distance to last occurrence of self.ints[{idx}] is {iy0}")
-            x = torch.zeros(N, dtype=torch.long) # Cannot have -1s here because everything is a token for embedding, 0 is therefore the default input
-            idx0 = max(0,idx - N + 1) # include as much history as we can fit into the block == block or partial block
-            ix = self.ints[idx0:idx+1]  # all ints up to and including the latest at [idx]
-            ixt = torch.tensor(ix, dtype=x.dtype)
-            xs = N-len(ix) # starting index for ixt in x
-            x[xs:] = ixt
-            y = -torch.ones(N, dtype=torch.long)
-            # Only a problem for transformer:
-            # if iy0 >= self.block_size:
-            #     print(f"NOTE: distance to previous instance of self.ints[{idx}] is {iy0} which exceeds {self.block_size=}")
-            y[N-1] = iy0 # last element contains the answer (distance back to the last occurrence of latest input int)
+            match distanceMode: # GLOBAL VARIABLE (defined in block __main__ below)
+                case DistanceMode.LoopingInts:
+                    HERE
+                case DistanceMode.LastOccurrence:
+                    # Original DISTANCE benchmark: recall distance to last occurrence - problem: unbounded
+                    iy0 = self.lastOccurrenceDistances[idx]
+                    if traceTensors:
+                        print(f"getitem: distance to last occurrence of self.ints[{idx}] is {iy0}")
+                    x = torch.zeros(N, dtype=torch.long) # Cannot have -1s here because everything is a token for embedding, 0 is therefore the default input
+                    idx0 = max(0,idx - N + 1) # include as much history as we can fit into the block == block or partial block
+                    ix = self.ints[idx0:idx+1]  # all ints up to and including the latest at [idx]
+                    ixt = torch.tensor(ix, dtype=x.dtype)
+                    xs = N-len(ix) # starting index for ixt in x
+                    x[xs:] = ixt
+                    y = -torch.ones(N, dtype=torch.long)
+                    # Only a problem for transformer:
+                    # if iy0 >= self.block_size:
+                    #     print(f"NOTE: distance to previous instance of self.ints[{idx}] is {iy0} which exceeds {self.block_size=}")
+                    y[N-1] = iy0 # last element contains the answer (distance back to the last occurrence of latest input int)
+                case DistanceMode.ReservedIntsRandomlyPlaced:
+                    # 1:num_target_ints in randomized locations in a list of different random ints in block
+                    # num_target_ints;
+                    # occurrences
+                    HERE
+                    # block = [random.randint(1+num_target_ints, numInts) for _ in range(numExamples)] # avoid 0 and 1:num_target_ints
+                    # target_indices = random.sample(range(1, block_size + 1), num_target_ints) # random locations
+                    # print(f"create_datasets: {target_indices=}")
+                    # N: ints[target_indices] = range(1, num_target_ints + 1) # I want to say this, but have to iterate:
+                    # for k, target_index in enumerate(target_indices):
+                    #     block[target_index] = k + 1 # exactly one occurrence at a random location
+                    #     print(f"\t: block[{target_index}] = {k+1}")
         elif self.data_mode == DataMode.DISTANCE_LEFT_JUSTIFIED: # randomly ordered ints
             N = self.block_size
             idx0 = max(0,idx - N + 1) # include as much history as we can fit into the block
@@ -863,27 +897,48 @@ def create_datasets(input_file, data_mode, block_size):
     basename = os.path.basename(input_file)
     name,ext = os.path.splitext(basename)
 
-    if data_mode == DataMode.WORDS: # original makemore case - input = list of words such as names
+    if data_mode == DataMode.WORDS: # original makemore case: input is a list of words one-per-line such as names
         assert ext == '.txt', f"DataMode.WORDS requires .txt input format, got {ext}"
         max_word_length = max(len(w) for w in words)
     elif data_mode == DataMode.DISTANCE: # distance ints
         assert ext == '.txt', "DataMode.DISTANCE requires .txt input format"
         if name == 'names': # original makemore default
             print(f"create_datasets: Generating DISTANCE DATA AUTOMATICALLY since no input DISTANCE data file-name specified")
-
             if block_size == 8 and batch_size == 1: # doing a small toy example
                 print(f"create_datasets: *** USING FOUR-BLOCK DATA SET FOR TESTING ***")
                 numExamples = 4*block_size
             else:
-                numExamples = 32033 # same as original names.txt why not
-
-            numInts = 27 # same as original vocab_size in names.txt
+                # 32033 = no. lines in names.txt:
+                numExamples = ( 32033 // block_size ) * block_size # prefer 
+                print(f"create_datasets: {block_size=}")
+            numInts = 27 # same as original vocab_size in names.txt - analogous to number of chars in token vocab
             print(f"create_datasets: DISTANCE benchmark: Generating {numExamples} ints between 1 and {numInts}")
-            if 0:
-                print(f"create_datasets: === Generating {numInts} looping test ints")
-                ints = range(1,numInts+1)
-            else:
-                ints = [random.randint(1, numInts) for _ in range(numExamples)] # avoid 0 which means "no input"
+            ints = [0] * numExamples
+            for i in range(0, numExamples, block_size):
+                match distanceMode: # GLOBAL VARIABLE (defined in block __main__ below)
+                    case DistanceMode.LoopingInts:
+                        print(f"create_datasets: === Generating {numInts} looping test ints")
+                        block = range(1,numInts+1)
+                    case DistanceMode.LastOccurrence:
+                        # Original DISTANCE benchmark: recall distance to last occurrence - problem: unbounded
+                        block = [random.randint(1, numInts) for _ in range(numExamples)] # avoid 0 which means "no input"
+                    case DistanceMode.ReservedIntsRandomlyPlaced:
+                        num_target_ints = 5 # make a parameter later or just change it here
+                        # Write 1:num_target_ints in randomized locations in a list of different random ints:
+                        block = [random.randint(1+num_target_ints, numInts) for _ in range(numExamples)] # avoid 0 and 1:num_target_ints
+                        target_indices = random.sample(range(1, block_size + 1), num_target_ints) # random locations
+                        print(f"create_datasets: {target_indices=}")
+                        # N: ints[target_indices] = range(1, num_target_ints + 1) # I want to say this, but have to iterate:
+                        for k, target_index in enumerate(target_indices):
+                            block[target_index] = k + 1 # exactly one occurrence at a random location
+                            print(f"\t: block[{target_index}] = {k+1}")
+                # N: ints[i:i+block_size] = block
+                for j in range(block_size):
+                    if i+j < numExamples:
+                        ints[i+j] = block[j] # exactly one occurrence at a random location
+                    else:
+                        print(f"*** create_datasets: DISTANCE: block_size does not divide numExamples - last block truncated")
+                        break
             words = [str(i) for i in ints] # FIXME: should not need this - revise data structures
             chars = sorted(list(set(''.join(words)))) # gross - not used - just to eliminate misleading printouts
         else:
@@ -1048,6 +1103,9 @@ if __name__ == '__main__':
 
     data_mode = str2dm(args.data_mode)
     print(f"dataset determined that: {data_mode=}")
+    if (data_mode == DataMode.DISTANCE):
+        distanceMode = DistanceMode.ReservedIntsRandomlyPlaced # maybe bring this out as a CL option
+        print(f"Setting DISTANCE mode to: {distanceMode=}")
 
     # init datasets
 
@@ -1110,7 +1168,7 @@ if __name__ == '__main__':
         print("resuming from existing model in the workdir")
         model.load_state_dict(torch.load(os.path.join(args.work_dir, 'model.pt')))
     if args.sample_only:
-        print_word_samples(block_size)
+        print_word_samples(block_size,data_mode)
         sys.exit()
 
     # init optimizer
