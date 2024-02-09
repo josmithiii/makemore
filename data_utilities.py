@@ -7,43 +7,6 @@ DataMode = Enum('DataMode', ['WORDS', 'QA', 'DISTANCE', 'DISTANCE_LEFT_JUSTIFIED
 DistanceMode = Enum('DistanceMode', ['LoopingInts', 'LastOccurrence', 'ReservedIntsRandomlyPlaced'])
 
 # -----------------------------------------------------------------------------
-# helper functions for creating the training and test Datasets that emit words
-
-def lastOccurrenceDistances(ints):
-    """
-    Calculate the distance from the last occurrence of each element in the list:
-    
-    Args:
-    ints (list of int): A list of integers.
-
-    Returns:
-    lastOccurrenceDistances (list of int):
-      lastOccurrenceDistances[i] = distance backwards to last occurrence of i, or 0 if i is new.
-
-    Example usage:
-    ints = [1, 2, 3, 2, 4, 1, 2, 3, 4, 2]
-    distances = lastOccurrenceDistances(ints)
-    print("ints:", ints)
-    print("Distances:", distances)
-    """
-    nints = len(ints)
-    print(f"lastOccurrenceDistance: Received {nints} ints")
-    if traceTensors:
-        print(f"\t{ints=}")
-
-    lastSeen = {}  # Dictionary to track the last seen index of each item
-    distances = []  # List to store distances
-    for i, itm in enumerate(ints):
-        # Calculate distance from the last occurrence
-        lasti = lastSeen.get(itm, -1)
-        dist = i-lasti if (lasti >= 0) else 0
-        distances.append(dist)
-        lastSeen[itm] = i
-
-    if traceTensors:
-        print(f"lastOccurrenceDistance: Returning {len(distances)} distances:\n{distances}")
-
-    return distances
 
 class CharDataset(Dataset): # original makemore case
 
@@ -185,31 +148,7 @@ class DistanceDataset(Dataset):
     def __init__(self, mode, ints, occurrences, block_size):
         self.distance_mode = mode
         self.ints = ints     # List of strings: names (INTS) | ListOps examples (QA) | ints (DISTANCE)
-        # print(f"ints = {self.ints}\n")
-        # self.lastOccurrenceDistances = {value: index for index, value in enumerate(self.ints)}
-        #  == dictionary mapping each int to its last occurrence (index)
-        match self.distance_mode:
-            case DistanceMode.LoopingInts:
-                HERE
-                self.occurrences = occurrences(self.ints) # index of special-int(s) occurrence in each block
-            case DistanceMode.LastOccurrence:
-                # Original DISTANCE benchmark: recall distance to last occurrence (unbounded)
-                self.lastOccurrenceDistances = lastOccurrenceDistances(self.ints)
-                # print(f"lastOccurrence = {self.lastOccurrenceDistances}\n")
-                maxLastOccurrence = max(self.lastOccurrenceDistances) # must create this many logits (possibly downsampled)
-                print(f"maximum lastOccurrence for {len(self.ints)} ints = {maxLastOccurrence}")
-                # assert maxLastOccurrence <= logits_size
-            case DistanceMode.ReservedIntsRandomlyPlaced:
-                self.occurrences = []
-                HERE
-                # Write 1:num_target_ints in randomized locations in a list of different random ints:
-                block = [random.randint(1+num_target_ints, numInts) for _ in range(numExamples)] # avoid 0 and 1:num_target_ints
-                target_indices = random.sample(range(1, block_size + 1), num_target_ints) # random locations
-                print(f"DistanceDataset: {target_indices=}")
-                # N: ints[target_indices] = range(1, num_target_ints + 1) # I want to say this, but have to iterate:
-                for k, target_index in enumerate(target_indices):
-                    block[target_index] = k + 1 # exactly one occurrence at a random location
-                    print(f"\t: block[{target_index}] = {k+1}")
+        self.occurrences = occurrences
         self.block_size = block_size # number of inputs (typically 1 for RNNs, max_word_length+1 for transformers (WORDS), etc.
         self.unknown_index = -1
 
@@ -314,6 +253,82 @@ def split_dataset(lines, block_size, shuffle=True):
     test_lines = [lines[i] for i in rp[-test_set_size:]]
     return train_lines, test_lines
 
+# ---------------------------------- Synthesize Datasets -------------------------------------------------
+# helper functions first:
+
+def lastOccurrenceDistances(ints):
+    """
+    Calculate the distance from the last occurrence of each element in the list:
+    
+    Args:
+    ints (list of int): A list of integers.
+
+    Returns:
+    lastOccurrenceDistances (list of int):
+      lastOccurrenceDistances[i] = distance backwards to last occurrence of i, or 0 if i is new.
+
+    Example usage:
+    ints = [1, 2, 3, 2, 4, 1, 2, 3, 4, 2]
+    distances = lastOccurrenceDistances(ints)
+    print("ints:", ints)
+    print("Distances:", distances)
+    """
+    nints = len(ints)
+    print(f"lastOccurrenceDistance: Received {nints} ints")
+    if traceTensors:
+        print(f"\t{ints=}")
+
+    lastSeen = {}  # Dictionary to track the last seen index of each item
+    distances = []  # List to store distances
+    for i, itm in enumerate(ints):
+        # Calculate distance from the last occurrence
+        lasti = lastSeen.get(itm, -1)
+        dist = i-lasti if (lasti >= 0) else 0
+        distances.append(dist)
+        lastSeen[itm] = i
+
+    if traceTensors:
+        print(f"lastOccurrenceDistance: Returning {len(distances)} distances:\n{distances}")
+
+    return distances
+
+# --------------------------------------------------------------------------------------------
+# DISTANCE
+
+def synth_distance_datasets(distance_mode=DistanceMode.ReservedIntsRandomlyPlaced, num_ints=27, num_target_ints=5, num_examples=128, block_size=64):
+    print(f"synth_distance_datasets: Generating {num_examples} ints between 1 and {num_ints} in blocks of size {block_size} with {num_target_ints} target ints")
+    ints = [0] * num_examples * block_size
+    tests = []
+    targs = []
+    for bi in range(0, num_examples):
+        block = [random.randint(1, num_ints) for _ in range(block_size)] # avoid 0 which means "no input"
+        occurrences = [0]*block_size
+        match distance_mode:
+            case DistanceMode.LoopingInts:
+                assert False, "DistanceMode.LoopingInts not written"
+            case DistanceMode.LastOccurrence:
+                # Original DISTANCE benchmark: recall distance to last occurrence (unbounded)
+                occurrences.append(lastOccurrenceDistances(block)) # FIXME: Memory does not span beyond a block
+                # print(f"lastOccurrence [within one block] = {self.lastOccurrenceDistances}\n")
+                maxLastOccurrence = max(self.lastOccurrenceDistances) # must create this many logits (possibly downsampled)
+                print(f"maximum lastOccurrence for {len(ints)} ints = {maxLastOccurrence}")
+            case DistanceMode.ReservedIntsRandomlyPlaced:
+                assert False, "DistanceDataset: Move this calculation to a separate data-generation script"
+                # Write 1:num_target_ints in randomized locations in a list of different random ints:
+                block = [random.randint(1+num_target_ints, numInts) for _ in range(numExamples)] # avoid 0 and 1:num_target_ints
+                target_indices = random.sample(range(1, block_size + 1), num_target_ints) # random locations
+                print(f"DistanceDataset: {target_indices=}")
+                # N: ints[target_indices] = range(1, num_target_ints + 1) # I want to say this, but have to iterate:
+                for k, target_index in enumerate(target_indices):
+                    block[target_index] = k + 1 # exactly one occurrence at a random location
+                    print(f"\t: block[{target_index}] = {k+1}")
+                    occurrences[target_index] = 1 # logit is 1 to indicate "here is the occurrence"
+        # N: ints[i:i+block_size] = block
+        for j in range(block_size):
+            ints[bi + j] = block[j] # exactly one occurrence at a random location
+        tests.append(block)
+        targs.append(occurrences)
+    return tests, targs
 # ---------------------------------- Create Datasets -------------------------------------------------
 
 def create_words_datasets(input_file, block_size=None):
@@ -336,11 +351,12 @@ def create_distance_datasets(input_file, block_size, distance_mode):
     print(f"{ints=}")
     if block_size is None:
         block_size = 1 + max(len(ln) for ln in lines)
+    for ln in range(len(lines)):
+        trgsx = [[0] * block_size + trgs[ln].to]
     train_ints, test_ints = split_dataset(ints, block_size, shuffle=False)
-    trgsx = [[0]*(block_size-1) + [i] for i in trgs] # place each target at the end of its own line
-    print(f"{trgs=}")
-    print(f"{trgsx=}")
     train_trgs, test_trgs = split_dataset(trgsx, block_size, shuffle=False)
+    print(f"{test_ints=}")
+    print(f"{test_trgs=}")
     # Assuming DistanceDataset requires some specific initialization
     train_dataset = DistanceDataset(distance_mode, train_ints, train_trgs, block_size)
     test_dataset =  DistanceDataset(distance_mode, test_ints,  test_trgs,  block_size)
