@@ -302,17 +302,17 @@ def read_input_file(input_file):
     words = [w.strip() for w in words if w]
     return words
 
-def split_dataset(words, block_size, shuffle=True):
-    nWords = len(words)
-    test_set_size = max(block_size, int(nWords * 0.1))
-    assert nWords > 2*test_set_size, f"Only {nWords} words of data for block_size={block_size}"
+def split_dataset(lines, block_size, shuffle=True):
+    nLines = len(lines)
+    test_set_size = max(1, int(nLines * 0.1))
+    assert nLines > 1, f"Only {nLines} lines of data.  Need at least 2 for both training and testing"
     if shuffle:
-        rp = torch.randperm(len(words)).tolist()
+        rp = torch.randperm(len(lines)).tolist()
     else:
-        rp = range(len(words))
-    train_words = [words[i] for i in rp[:-test_set_size]]
-    test_words = [words[i] for i in rp[-test_set_size:]]
-    return train_words, test_words
+        rp = range(len(lines))
+    train_lines = [lines[i] for i in rp[:-test_set_size]]
+    test_lines = [lines[i] for i in rp[-test_set_size:]]
+    return train_lines, test_lines
 
 # ---------------------------------- Create Datasets -------------------------------------------------
 
@@ -330,11 +330,17 @@ def create_words_datasets(input_file, block_size=None):
 def create_distance_datasets(input_file, block_size, distance_mode):
     print(f"create_distance_datasets: Reading {input_file=}")
     lines = read_input_file(input_file)
-    targets, ints = zip(*[line.split('\t', 1) for line in lines])
+    print(f"{lines=}")
+    trgs, ints = zip(*[line.split('\t', 1) for line in lines])
+    print(f"{trgs=}")
+    print(f"{ints=}")
     if block_size is None:
         block_size = 1 + max(len(ln) for ln in lines)
     train_ints, test_ints = split_dataset(ints, block_size, shuffle=False)
-    train_trgs, test_trgs = split_dataset(trgs, block_size, shuffle=False)
+    trgsx = [[0]*(block_size-1) + [i] for i in trgs] # place each target at the end of its own line
+    print(f"{trgs=}")
+    print(f"{trgsx=}")
+    train_trgs, test_trgs = split_dataset(trgsx, block_size, shuffle=False)
     # Assuming DistanceDataset requires some specific initialization
     train_dataset = DistanceDataset(distance_mode, train_ints, train_trgs, block_size)
     test_dataset =  DistanceDataset(distance_mode, test_ints,  test_trgs,  block_size)
@@ -362,6 +368,7 @@ def create_datasets(input_file, data_mode, block_size=None):
         train_dataset, test_dataset, block_size = create_distance_datasets(input_file, block_size, distance_mode)
     elif data_mode == DataMode.QA:
         train_dataset, test_dataset, block_size = create_qa_datasets(input_file, block_size)
+    return train_dataset, test_dataset, block_size
 
 # --------------------------------------------------------
 # Data loading
