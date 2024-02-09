@@ -2,9 +2,14 @@ import os
 import torch
 from torch.utils.data import Dataset
 from enum import Enum
+from itertools import chain
+from torch.utils.data.dataloader import DataLoader
 
 DataMode = Enum('DataMode', ['WORDS', 'QA', 'DISTANCE', 'DISTANCE_LEFT_JUSTIFIED'])
 DistanceMode = Enum('DistanceMode', ['LoopingInts', 'LastOccurrence', 'ReservedIntsRandomlyPlaced'])
+
+traceTensors = False
+traceTensorsXY = False
 
 # -----------------------------------------------------------------------------
 
@@ -146,20 +151,24 @@ class ListOpsDataset(Dataset):
 class DistanceDataset(Dataset):
 
     def __init__(self, mode, ints, occurrences, block_size):
+        print(f"DistanceDataset: {ints=}")
+        assert isinstance(ints[0][0], int)
+        print(f"DistanceDataset: {occurrences=}")
+        assert isinstance(occurrences[0][0], int)
         self.distance_mode = mode
-        self.ints = ints     # List of strings: names (INTS) | ListOps examples (QA) | ints (DISTANCE)
-        self.occurrences = occurrences
-        self.block_size = block_size # number of inputs (typically 1 for RNNs, max_word_length+1 for transformers (WORDS), etc.
+        self.ints = ints               # List of lists of ints
+        self.occurrences = occurrences # same
+        self.block_size = block_size   # number of inputs (typically 1 for RNNs, max_word_length+1 for transformers (WORDS), etc.
         self.unknown_index = -1
 
     def __len__(self):
-        return len(self.words)
+        return len(self.ints)
 
     def contains(self, word):
         return word in self.words
 
     def get_vocab_size(self): # INPUT vocabulary = number of symbols in input
-        vocab_size = max(self.ints) + 1 # number of tokens we need to be able to embed
+        vocab_size = max(chain.from_iterable(self.ints)) + 1 # number of tokens we need to be able to embed - add '0'
         print(f"CharDataset: DISTANCE: {vocab_size=}")
         return vocab_size
 
@@ -242,7 +251,7 @@ def read_input_file(input_file):
     return words
 
 def split_dataset(lines, block_size, shuffle=True):
-    nLines = len(lines)
+    nLines = len(lines) # strings
     test_set_size = max(1, int(nLines * 0.1))
     assert nLines > 1, f"Only {nLines} lines of data.  Need at least 2 for both training and testing"
     if shuffle:
@@ -351,15 +360,30 @@ def create_distance_datasets(input_file, block_size, distance_mode):
     print(f"{ints=}")
     if block_size is None:
         block_size = 1 + max(len(ln) for ln in lines)
+    trgsx = []
     for ln in range(len(lines)):
-        trgsx = [[0] * block_size + trgs[ln].to]
-    train_ints, test_ints = split_dataset(ints, block_size, shuffle=False)
-    train_trgs, test_trgs = split_dataset(trgsx, block_size, shuffle=False)
+        trgsx.append([0] * (block_size-1) + [int(trgs[ln])])
+    print(f"{trgsx=}")
+    intsx = []
+    for line in ints:
+        intsx.append([int(x) for x in line.split()])
+    print(f"{trgsx=}")
+    # train_lines, test_lines = split_dataset(lines, block_size, shuffle=False)
+    train_trgsx, test_trgsx = split_dataset(trgsx, block_size, shuffle=False)
+    train_lines, test_lines = split_dataset(ints, block_size, shuffle=False)
+    train_ints = []
+    for ln in train_lines:
+        train_ints.append([int(x) for x in ln.split()])
+    test_ints = []
+    for ln in test_lines:
+        test_ints.append([int(x) for x in ln.split()])
     print(f"{test_ints=}")
-    print(f"{test_trgs=}")
+    print(f"{test_trgsx=}")
+    print(f"{train_ints=}")
+    print(f"{train_trgsx=}")
     # Assuming DistanceDataset requires some specific initialization
-    train_dataset = DistanceDataset(distance_mode, train_ints, train_trgs, block_size)
-    test_dataset =  DistanceDataset(distance_mode, test_ints,  test_trgs,  block_size)
+    train_dataset = DistanceDataset(distance_mode, train_ints, train_trgsx, block_size)
+    test_dataset  = DistanceDataset(distance_mode, test_ints,  test_trgsx,  block_size)
     return train_dataset, test_dataset, block_size
 
 def create_qa_datasets(input_file, block_size=None):
@@ -410,10 +434,9 @@ class InfiniteDataLoader:
     a better way in PyTorch to just create an infinite dataloader?
     """
 
-    def __init__(self, dataset, **kwargs):
-        doShuffle = (data_mode != DataMode.DISTANCE) # this is a memory task that shuffling would destroy
-        print(f"{doShuffle=}")
-        if doShuffle:
+    def __init__(self, dataset, shuffle, **kwargs):
+        print(f"{shuffle=}")
+        if shuffle:
             train_sampler = torch.utils.data.RandomSampler(dataset, replacement=True, num_samples=int(1e10))
         else:
             train_sampler = LoopingSequentialSampler(dataset)
@@ -427,4 +450,3 @@ class InfiniteDataLoader:
             self.data_iter = iter(self.train_loader)
             batch = next(self.data_iter)
         return batch
-

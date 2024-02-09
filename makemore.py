@@ -39,7 +39,7 @@ import mambaminimal as mm # mambaminimal.py
 import cProfile
 import random
 
-from data_utilities import DataMode, DistanceMode, create_datasets
+from data_utilities import DataMode, DistanceMode, create_datasets, InfiniteDataLoader
 
 def setSeed(seed):
     random.seed(seed)
@@ -574,8 +574,8 @@ def evaluate(model, dataset, data_mode, batch_size=50, max_batches=None, make_gr
             hl_graph.save(gfname, format="png")
             print(f"Written: {gfname}.png")
 
-    doShuffle = (data_mode != DataMode.DISTANCE) # this is a memory task that shuffling would destroy
     # original: loader = DataLoader(dataset, shuffle=True, batch_size=batch_size, num_workers=0)
+    doShuffle = (data_mode != DataMode.DISTANCE) # this is a memory task that shuffling would destroy
     loader = DataLoader(dataset, shuffle=doShuffle, batch_size=batch_size, num_workers=0) # , batch_sampler=doShuffle)
     loader = DataLoader(dataset, shuffle=doShuffle, batch_size=batch_size, num_workers=0) # , batch_sampler=doShuffle)
     losses = []
@@ -728,7 +728,8 @@ if __name__ == '__main__':
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay, betas=(0.9, 0.99), eps=1e-8)
 
     # init dataloader
-    batch_loader = InfiniteDataLoader(train_dataset, batch_size=args.batch_size, pin_memory=True, num_workers=args.num_workers)
+    shuffle = (data_mode != DataMode.DISTANCE) # this is a memory task that shuffling would destroy
+    batch_loader = InfiniteDataLoader(train_dataset, shuffle, batch_size=args.batch_size, pin_memory=True, num_workers=args.num_workers)
 
     # training loop
     best_loss = None
