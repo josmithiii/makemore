@@ -162,10 +162,11 @@ class ListOpsDataset(Dataset):
 class DistanceDataset(Dataset):
 
     def __init__(self, mode, ints, occurrences, block_size):
-        print(f"DistanceDataset: {ints=}")
         assert isinstance(ints[0][0], int)
-        print(f"DistanceDataset: {occurrences=}")
         assert isinstance(occurrences[0][0], int)
+        if traceTensors:
+            print(f"DistanceDataset: {ints=}")
+            print(f"DistanceDataset: {occurrences=}")
         self.distance_mode = mode
         self.ints = ints               # List of lists of ints
         self.occurrences = occurrences # same
@@ -215,10 +216,6 @@ class DistanceDataset(Dataset):
 
     def __getitem__(self, idx): # DistanceDataset.__getitem__: idx is an int addressing one word (line) in input:
         # Return inputs and targets for one block of the input file (one training example).
-        if 1 or traceTensors:
-            print(f"DistanceDataset: getitem: {idx=}") # randomly jumps among batches
-            print(f"getitem: self.ints[{idx}] == {ix0}")
-            print(f"getitem: self.occurrences[{idx}] == {iy0}")
 
         N = self.block_size
 
@@ -226,12 +223,17 @@ class DistanceDataset(Dataset):
         ints_block = self.ints[idx]
         occurrences_block = self.occurrences[idx]
 
+        if traceTensors:
+            print(f"DistanceDataset: getitem: {idx=}") # randomly jumps among batches
+            print(f"getitem: self.ints[{idx}] == {ints_block=}")
+            print(f"getitem: self.occurrences[{idx}] == {occurrences_block=}")
+
         # Convert lists to tensors
         x = torch.tensor(ints_block, dtype=torch.long)
         y = torch.tensor(occurrences_block, dtype=torch.long)
 
         # Ensure x and y are the correct shape (N,)
-        assert x.size(0) == N and y.size(0) == N, "Blocks must be of size N"
+        assert x.size(0) == N and y.size(0) == N, f"Blocks {x.size(0)=} and {y.size(0)=} must be of size {N=}"
 
         return x, y # inputs and targets
 
@@ -349,34 +351,43 @@ def create_words_datasets(input_file, block_size=None):
 def create_distance_datasets(input_file, block_size, distance_mode):
     print(f"create_distance_datasets: Reading {input_file=}")
     lines = read_input_file(input_file)
-    print(f"{lines=}")
-    trgs, ints = zip(*[line.split('\t', 1) for line in lines])
-    print(f"{trgs=}")
-    print(f"{ints=}")
+    if traceTensors:
+        print(f"{lines=}")
+    trgss, intss = zip(*[line.split('\t', 1) for line in lines])
+    #trgs = [int(s) for s in trgs]
+    #ints = [int(s.split()) for s in [ints[k] for k in range(len(ints))]]
+    # Convert each string in the list to a list of integers
+    trgs = [[int(num) for num in s.split()] for s in trgss]
+    ints = [[int(num) for num in s.split()] for s in intss]
+
+    if traceTensors:
+        print(f"{trgs=}")
+        print(f"{ints=}")
     if block_size is None:
-        block_size = 1 + max(len(ln) for ln in lines)
+        block_size = max(len(ln) for ln in ints)
         print(f"create_distance_datasets: computed {block_size=}")
     trgsx = []
-    for ln in range(len(lines)):
-        trgsx.append([0] * (block_size-1) + [int(trgs[ln])])
-    print(f"{trgsx=}")
-    intsx = []
-    for line in ints:
-        intsx.append([int(x) for x in line.split()])
-    print(f"{trgsx=}")
-    # train_lines, test_lines = split_dataset(lines, block_size, shuffle=False)
+    for ln in range(len(trgs)):
+        assert len(trgs[ln]) == 1, f"Only supporting one target at present"
+        trgsx.append([0] * (block_size-1) + trgs[ln])
+    if traceTensors:
+        print(f"{trgsx=}")
+    # Split trgsx and ints datasets:
     train_trgsx, test_trgsx = split_dataset(trgsx, block_size, shuffle=False)
-    train_lines, test_lines = split_dataset(ints, block_size, shuffle=False)
-    train_ints = []
-    for ln in train_lines:
-        train_ints.append([int(x) for x in ln.split()])
-    test_ints = []
-    for ln in test_lines:
-        test_ints.append([int(x) for x in ln.split()])
-    print(f"{test_ints=}")
-    print(f"{test_trgsx=}")
-    print(f"{train_ints=}")
-    print(f"{train_trgsx=}")
+    train_ints, test_ints = split_dataset(ints, block_size, shuffle=False)
+    if traceTensors:
+        print(f"{len(test_ints)=}")
+        print(f"{len(test_trgsx)=}")
+        print(f"{len(train_ints)=}")
+        print(f"{len(train_trgsx)=}")
+        print(f"{len(test_ints[0])=}")
+        print(f"{len(test_trgsx[0])=}")
+        print(f"{len(train_ints[0])=}")
+        print(f"{len(train_trgsx[0])=}")
+        print(f"{test_ints=}")
+        print(f"{test_trgsx=}")
+        print(f"{train_ints=}")
+        print(f"{train_trgsx=}")
     # Assuming DistanceDataset requires some specific initialization
     train_dataset = DistanceDataset(distance_mode, train_ints, train_trgsx, block_size)
     test_dataset  = DistanceDataset(distance_mode, test_ints,  test_trgsx,  block_size)
