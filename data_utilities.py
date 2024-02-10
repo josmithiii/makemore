@@ -38,6 +38,10 @@ class CharDataset(Dataset): # original makemore case
         ix = torch.tensor([self.stoi[w] for w in word], dtype=torch.long)
         return ix
 
+    def decode(self, ix):
+        word = ''.join(self.itos[i] for i in ix)
+        return word
+
     def __getitem__(self, idx): # CharDataset.__getitem__: idx is an int addressing one word (line) in input data file:
         # Return inputs and targets for one line of the input file (one training example).
         # print (f"__getitem__: idx = {idx}, word == {self.words[idx]}, data_mode = {self.data_mode}")
@@ -46,7 +50,8 @@ class CharDataset(Dataset): # original makemore case
         word = self.words[idx].strip()
         assert word[0] != '|', f"ListOps input format not supported by data-mode WORDS"
         ix = self.encode(word) # tensor of type long
-        assert len(ix) <= N, f"getitem: input WORD of length {len(ix)} overflows input buffer {self.block_size=}"
+        N = self.max_word_length
+        assert len(ix) <= N, f"getitem: input WORD of length {len(ix)} overflows max_word_length {N}"
         x = torch.zeros(self.max_word_length + 1, dtype=torch.long)
         y = torch.zeros(self.max_word_length + 1, dtype=torch.long)
         Nix = len(ix)
@@ -328,7 +333,7 @@ def create_words_datasets(input_file, block_size=None):
     chars = sorted(list(set(''.join(words))))
     vocab_size = len(chars) + 1
     if block_size is None:
-        block_size = vocab_size
+        block_size = max(len(word) for word in words)
     train_words, test_words = split_dataset(words, block_size)
     train_dataset = CharDataset(train_words, chars, block_size)
     test_dataset = CharDataset(test_words, chars, block_size)

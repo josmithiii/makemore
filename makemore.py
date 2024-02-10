@@ -538,7 +538,7 @@ def print_word_samples(num=10):
         row = X_samp[i, 1:].tolist() # initial <START> token omitted
         crop_index = row.index(0) if 0 in row else len(row) # find the <STOP> token
         row = row[:crop_index] # take everything up to but not including <STOP> token
-        word_samp = train_dataset.decode_word(row) # convert the list of integers to a string
+        word_samp = train_dataset.decode(row) # convert the list of integers to a string
         # separately track samples that we have and have not seen before
         if train_dataset.contains(word_samp):
             train_samples.append(word_samp)
