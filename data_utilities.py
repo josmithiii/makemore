@@ -41,7 +41,9 @@ class CharDataset(Dataset): # original makemore case
         return ix
 
     def decode(self, ix):
-        word = ''.join(self.itos[i] for i in ix)
+        word = ''.join(self.itos.get(i, '?') for i in ix)  # Use '?' for missing keys
+        if '?' in word:
+            print(f"*** CharDataset: decode: Index {ix} out of range - returning '?'")
         return word
 
     def __getitem__(self, idx): # CharDataset.__getitem__: idx is an int addressing one word (line) in input data file:
