@@ -203,43 +203,26 @@ class DistanceDataset(Dataset):
             return -1
 
     def __getitem__(self, idx): # DistanceDataset.__getitem__: idx is an int addressing one word (line) in input:
-        # Return inputs and targets for one line of the input file (one training example).
-        # print (f"__getitem__: idx = {idx}, word == {self.words[idx]}, distance_mode = {self.distance_mode}")
+        # Return inputs and targets for one block of the input file (one training example).
         if traceTensors:
-            print(f"DistanceDataset: getitem: {idx=}") # randomly jumps among batches, but data builds ok below
+            print(f"DistanceDataset: getitem: {idx=}") # randomly jumps among batches
+            print(f"getitem: self.ints[{idx}] == {ix0}")
+            print(f"getitem: self.occurrences[{idx}] == {iy0}")
+
         N = self.block_size
-        match self.distance_mode:
-            case DistanceMode.LoopingInts:
-                print("*** WRITE __getitem__ for DistanceMode.LoopingInts")
-            case DistanceMode.LastOccurrence:
-                # Original DISTANCE benchmark: recall distance to last occurrence - problem: unbounded
-                iy0 = self.lastOccurrenceDistances[idx]
-                if traceTensors:
-                    print(f"getitem: distance to last occurrence of self.ints[{idx}] is {iy0}")
-                x = torch.zeros(N, dtype=torch.long) # Cannot have -1s here because everything is a token for embedding, 0 is therefore the default input
-                idx0 = max(0,idx - N + 1) # include as much history as we can fit into the block == block or partial block
-                ix = self.ints[idx0:idx+1]  # all ints up to and including the latest at [idx]
-                ixt = torch.tensor(ix, dtype=x.dtype)
-                xs = N-len(ix) # starting index for ixt in x
-                x[xs:] = ixt
-                y = -torch.ones(N, dtype=torch.long)
-                # Only a problem for transformer:
-                # if iy0 >= self.block_size:
-                #     print(f"NOTE: distance to previous instance of self.ints[{idx}] is {iy0} which exceeds {self.block_size=}")
-                y[N-1] = iy0 # last element contains the answer (distance back to the last occurrence of latest input int)
-            case DistanceMode.ReservedIntsRandomlyPlaced:
-                # 1:num_target_ints in randomized locations in a list of different random ints in block
-                # num_target_ints;
-                # occurrences
-                print("*** WRITE __getitem__ for  DistanceMode.ReservedIntsRandomlyPlaced")
-                # block = [random.randint(1+num_target_ints, numInts) for _ in range(numExamples)] # avoid 0 and 1:num_target_ints
-                # target_indices = random.sample(range(1, block_size + 1), num_target_ints) # random locations
-                # print(f"DistanceDataset: {target_indices=}")
-                # N: ints[target_indices] = range(1, num_target_ints + 1) # I want to say this, but have to iterate:
-                # for k, target_index in enumerate(target_indices):
-                #     block[target_index] = k + 1 # exactly one occurrence at a random location
-                #     print(f"\t: block[{target_index}] = {k+1}")
-        return x, y # inputs and target
+
+        # Fetch the block directly since each index corresponds to a full block
+        ints_block = self.ints[idx]
+        occurrences_block = self.occurrences[idx]
+
+        # Convert lists to tensors
+        x = torch.tensor(ints_block, dtype=torch.long)
+        y = torch.tensor(occurrences_block, dtype=torch.long)
+
+        # Ensure x and y are the correct shape (N,)
+        assert x.size(0) == N and y.size(0) == N, "Blocks must be of size N"
+
+        return x, y # inputs and targets
 
 # ------------------------------------- Helpers ---------------------------------------------------
 
