@@ -46,10 +46,11 @@ def setSeed(seed):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
 
+#traceTensors = True
 traceTensors = False
 
-traceTensorsXY = False
 #traceTensorsXY = True
+traceTensorsXY = False
 
 # None of these worked, but nnviz did, after creating defaultConfig below to use in "default constructors"
 # Perhaps one or more of these can work now:
@@ -663,6 +664,7 @@ if __name__ == '__main__':
     # init datasets
 
     block_size = None if args.block_size <= 0 else args.block_size
+    print(f"{block_size=}")
 
     train_dataset, test_dataset, block_size = create_datasets(args.input_file, data_mode, block_size)
 

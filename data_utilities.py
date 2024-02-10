@@ -15,10 +15,12 @@ traceTensorsXY = False
 
 class CharDataset(Dataset): # original makemore case
 
-    def __init__(self, words, chars, max_word_length):
+    def __init__(self, words, chars, block_size):
         self.words = words
         self.chars = chars     # Set of all chars used in words
-        self.max_word_length = max_word_length
+        self.block_size = block_size
+        assert block_size > max(len(word) for word in words) # need one extra for starting 0
+
         self.stoi = {ch:i+1 for i,ch in enumerate(chars)} # +1 to reserve 0 for padding char
         self.itos = {i:s for s,i in self.stoi.items()} # inverse mapping
 
@@ -50,10 +52,10 @@ class CharDataset(Dataset): # original makemore case
         word = self.words[idx].strip()
         assert word[0] != '|', f"ListOps input format not supported by data-mode WORDS"
         ix = self.encode(word) # tensor of type long
-        N = self.max_word_length
-        assert len(ix) <= N, f"getitem: input WORD of length {len(ix)} overflows max_word_length {N}"
-        x = torch.zeros(self.max_word_length + 1, dtype=torch.long)
-        y = torch.zeros(self.max_word_length + 1, dtype=torch.long)
+        N = self.block_size
+        assert len(ix) <= N, f"getitem: input WORD of length {len(ix)} overflows block_size {N}"
+        x = torch.zeros(self.block_size, dtype=torch.long)
+        y = torch.zeros(self.block_size, dtype=torch.long)
         Nix = len(ix)
         x[1:1+Nix] = ix  # Copy 'ix' into 'x' starting at index 1: [0,   ix0, ix1, ..., ixNM2, ixNM1, 0, 0, ... 0]
         y[:Nix] = ix     # Copy 'ix' into 'y' starting at index 0: [ix0, ix1, ix2, ..., ixNM1,     0, 0, 0, ... 0]
@@ -163,7 +165,7 @@ class DistanceDataset(Dataset):
         self.distance_mode = mode
         self.ints = ints               # List of lists of ints
         self.occurrences = occurrences # same
-        self.block_size = block_size   # number of inputs (typically 1 for RNNs, max_word_length+1 for transformers (WORDS), etc.
+        self.block_size = block_size   # number of inputs
         self.unknown_index = -1
 
     def __len__(self):
@@ -333,7 +335,8 @@ def create_words_datasets(input_file, block_size=None):
     chars = sorted(list(set(''.join(words))))
     vocab_size = len(chars) + 1
     if block_size is None:
-        block_size = max(len(word) for word in words)
+        block_size = 1 + max(len(word) for word in words) # +1 for starting 0
+        print(f"create_words_datasets: computed {block_size=}")
     train_words, test_words = split_dataset(words, block_size)
     train_dataset = CharDataset(train_words, chars, block_size)
     test_dataset = CharDataset(test_words, chars, block_size)
@@ -348,6 +351,7 @@ def create_distance_datasets(input_file, block_size, distance_mode):
     print(f"{ints=}")
     if block_size is None:
         block_size = 1 + max(len(ln) for ln in lines)
+        print(f"create_distance_datasets: computed {block_size=}")
     trgsx = []
     for ln in range(len(lines)):
         trgsx.append([0] * (block_size-1) + [int(trgs[ln])])
@@ -381,6 +385,7 @@ def create_qa_datasets(input_file, block_size=None):
     targets, tests = zip(*[line.split('\t', 1) for line in words])
     if block_size is None:
         block_size = 1 + max(len(w) for w in words)
+        print(f"create_qa_datasets: computed {block_size=}")
     train_words, test_words = split_dataset(words, block_size)
     # Assuming ListopsDataset or a similar dataset class is used for QA
     train_dataset = ListopsDataset(train_words, block_size)
