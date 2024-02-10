@@ -49,8 +49,8 @@ def setSeed(seed):
 #traceTensors = True
 traceTensors = False
 
-traceTensorsXY = True
-#traceTensorsXY = False
+#traceTensorsXY = True
+traceTensorsXY = False
 
 # None of these worked, but nnviz did, after creating defaultConfig below to use in "default constructors"
 # Perhaps one or more of these can work now:

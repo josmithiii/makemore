@@ -215,7 +215,7 @@ class DistanceDataset(Dataset):
 
     def __getitem__(self, idx): # DistanceDataset.__getitem__: idx is an int addressing one word (line) in input:
         # Return inputs and targets for one block of the input file (one training example).
-        if traceTensors:
+        if 1 or traceTensors:
             print(f"DistanceDataset: getitem: {idx=}") # randomly jumps among batches
             print(f"getitem: self.ints[{idx}] == {ix0}")
             print(f"getitem: self.occurrences[{idx}] == {iy0}")
