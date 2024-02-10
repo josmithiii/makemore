@@ -8,8 +8,8 @@ from torch.utils.data.dataloader import DataLoader
 DataMode = Enum('DataMode', ['WORDS', 'QA', 'DISTANCE', 'DISTANCE_LEFT_JUSTIFIED'])
 DistanceMode = Enum('DistanceMode', ['LoopingInts', 'LastOccurrence', 'ReservedIntsRandomlyPlaced'])
 
+#traceTensors = True
 traceTensors = False
-traceTensorsXY = False
 
 # -----------------------------------------------------------------------------
 
@@ -66,11 +66,12 @@ class CharDataset(Dataset): # original makemore case
 
 class ListOpsDataset(Dataset):
 
-    def __init__(self, mode, problems, chars, block_size):
+    def __init__(self, problems, solutions, block_size):
         self.problems = problems     # List of strings: ListOps examples (DataMode.QA)
-        self.chars = chars     # Set of all chars used in problems
-        self.block_size = block_size # number of inputs (typically 1 for RNNs, max_problem_length+1 for transformers (WORDS), etc.
-        self.stoi = {ch:i+1 for i,ch in enumerate(chars)} # +1 to reserve 0 for padding char
+        self.solutions = solutions   # List of strings: ListOps example answers
+        self.block_size = block_size # number of inputs
+        self.chars = sorted(list(set(''.join(problems + solutions))))
+        self.stoi = {ch:i+1 for i,ch in enumerate(self.chars)} # +1 to reserve 0 for padding char
         self.itos = {i:s for s,i in self.stoi.items()} # inverse mapping
         self.unknown_index = -1
 
@@ -116,21 +117,22 @@ class ListOpsDataset(Dataset):
     def __getitem__(self, idx): # ListOpsDataset.__getitem__: idx is an int addressing one problem (line) in input:
         # Return inputs and targets for one line of the input file (one training example).
         # print (f"ListOpsDataset.__getitem__: idx = {idx}, problem == {self.problems[idx]}, data_mode = {self.data_mode}")
+        N = self.block_size
+        problem = self.problems[idx]
+        solution = self.solutions[idx]
         if traceTensors:
             print(f"ListOpsDataset: getitem: {idx=}") # randomly jumps among batches, but data builds ok below
-        N = self.block_size
-        problem = self.problems[idx].strip()
-        assert problem[0] == '|', f"QA data-mode requires ListOps input format (.tsv), found problem[0] = {problem[0]}"
-        _, target, test = problem.split('|')  # example received as "|target|test"
-        # print(f"\ntest == {test}\n\ntarget == {target}\n")
+            print(f"\tgetitem: {problem=}")
+            print(f"\tgetitem: {solution=}")
+
         # Create this format:
         # x: test ......
         # y: .... target
 
         # print(f"\nEncoding test == {test}\n")
-        ix = self.encode(test)  # each char converted to an integer
+        ix = self.encode(problem)  # each char converted to an integer
         # print(f"\nEncoding target == {target}\n")
-        iy = self.encode(target)  # each char of target converted to an integer
+        iy = self.encode(solution)  # each char of target converted to an integer
         nx = len(ix)
         ny = len(iy)
         assert nx+ny < self.block_size, f"getitem: block_size {self.block_size=} must equal or exceed {nx=} + {ny=}"
@@ -381,17 +383,17 @@ def create_distance_datasets(input_file, block_size, distance_mode):
     return train_dataset, test_dataset, block_size
 
 def create_qa_datasets(input_file, block_size=None):
-    words = read_input_file(input_file)
+    lines = read_input_file(input_file)
     # Process QA data
-    # Splitting into targets and tests might be specific to ListopsDataset
-    targets, tests = zip(*[line.split('\t', 1) for line in words])
+    # Splitting into targets and tests might be specific to ListOpsDataset
+    solutions, problems = zip(*[line.split('\t', 1) for line in lines]) # e.g., ./data/listops/data.txt
     if block_size is None:
-        block_size = 1 + max(len(w) for w in words)
+        block_size = 1 + max(len(ln) for ln in lines)
         print(f"create_qa_datasets: computed {block_size=}")
-    train_words, test_words = split_dataset(words, block_size)
-    # Assuming ListopsDataset or a similar dataset class is used for QA
-    train_dataset = ListopsDataset(train_words, block_size)
-    test_dataset = ListopsDataset(test_words, block_size)
+    train_problems, test_problems = split_dataset(problems, block_size)
+    train_solutions, test_solutions = split_dataset(solutions, block_size)
+    train_dataset = ListOpsDataset(train_problems, train_solutions, block_size)
+    test_dataset = ListOpsDataset(test_problems, test_solutions, block_size)
     return train_dataset, test_dataset, block_size
 
 def create_datasets(input_file, data_mode, block_size=None):
