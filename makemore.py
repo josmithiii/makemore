@@ -77,7 +77,7 @@ class ModelConfig:
     # block_size is important for Transformer and any model that works only on one input buffer at a time
     # (no recurrence).
 
-# For visualizations:
+# For visualizations which need a "default constructor":
 defaultConfig = ModelConfig(vocab_size=27, block_size=32, logits_size=27, n_layer=4, n_head=4, n_embd=16, n_embd2=16, data_mode=DataMode.WORDS)
 
 # -----------------------------------------------------------------------------
@@ -585,7 +585,7 @@ def evaluate(model, dataset, data_mode, batch_size=50, max_batches=None, make_gr
         X, Y = batch
         if traceTensorsXY:
             print(f"evaluate: {X.shape=}\n{Y.shape=}")
-        logits, loss = model(X, Y)
+        logits, loss = model(X, Y) # ********************** MAIN EVENT **********************
         if traceTensorsXY:
             print(f"evaluate: {logits.shape=}")
         losses.append(loss.item())
@@ -639,6 +639,7 @@ if __name__ == '__main__':
     parser.add_argument('--learning-rate', '-l', type=float, default=5e-4, help="learning rate")
     parser.add_argument('--weight-decay', '-w', type=float, default=0.01, help="weight decay")
     args = parser.parse_args()
+    print(f"=== __main__({__file__}):")
     print(vars(args))
 
     # system inits
@@ -671,6 +672,7 @@ if __name__ == '__main__':
     embedding_size = args.embedding_size
     logits_size = args.logits_size
     vocab_size = train_dataset.get_vocab_size()
+    print(f"train_dataset says {vocab_size=}")
     if logits_size == None:
         logits_size = vocab_size
         print(f"main: logits_size set to {vocab_size=}")
@@ -680,26 +682,13 @@ if __name__ == '__main__':
 #        if max(train_dataset(:,
 
     print(f"+++ dataset determined that: {vocab_size=}")
-    print(f"test_dataset: {test_dataset=}")
+    print(f"test_dataset: {test_dataset[0]=}")
     # init model - FIXME: For DataMode.DISTANCE, output an unsigned int instead of (too many) logits
     config = ModelConfig(vocab_size=vocab_size, block_size=block_size, logits_size=logits_size,
                          n_layer=args.n_layer, n_head=args.n_head,
                          n_embd=args.n_embd, n_embd2=args.n_embd2, data_mode=data_mode)
 
-    mambaConfig = mm.ModelArgs(
-        d_model=args.n_embd,
-        n_layer=args.n_layer,
-        vocab_size=vocab_size,
-        block_size=block_size,
-        # Mamba output size == block_size because it is a sequence to sequence map => no
-        # logits_size=logits_size,
-        d_state=args.n_head, # too janky?
-        expand=2, # FIXME: bring out state-expansion-factor parameter
-        dt_rank='auto', # auto => d_model/16
-        d_conv=4, # Conv1d kernel size
-        pad_vocab_size_multiple=8, # Forces vocab_size to be a multiple of this
-        conv_bias=True,
-        bias=False)
+    print(f"main: {vocab_size=}")
 
     if args.type == 'transformer':
         model = Transformer(config)
@@ -714,6 +703,20 @@ if __name__ == '__main__':
     elif args.type == 'bow':
         model = BoW(config)
     elif args.type == 'mamba':
+        mambaConfig = mm.ModelArgs(
+            d_model=args.n_embd,
+            n_layer=args.n_layer,
+            vocab_size=vocab_size,
+            block_size=block_size,
+            # Mamba output size == block_size because it is a sequence to sequence map:
+            # Mamba logits size == vocab_size
+            d_state=args.n_head, # too janky?
+            expand=2, # FIXME: bring out state-expansion-factor parameter
+            dt_rank='auto', # auto => d_model/16
+            d_conv=4, # Conv1d kernel size
+            pad_vocab_size_multiple=1, # Forces vocab_size to be a multiple of this
+            conv_bias=True,
+            bias=False)
         model = mm.Mamba(mambaConfig)
     else:
         raise ValueError(f'model type {args.type} is not recognized')
