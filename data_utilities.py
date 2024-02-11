@@ -19,7 +19,8 @@ class CharDataset(Dataset): # original makemore case
         self.words = words
         self.chars = chars     # Set of all chars used in words
         self.block_size = block_size
-        assert block_size > max(len(word) for word in words) # need one extra for starting 0
+        self.max_word_length = max(len(word) for word in words)
+        assert block_size > self.max_word_length # need one extra for starting 0
 
         self.stoi = {ch:i+1 for i,ch in enumerate(chars)} # +1 to reserve 0 for padding char
         self.itos = {i:s for s,i in self.stoi.items()} # inverse mapping
@@ -31,7 +32,10 @@ class CharDataset(Dataset): # original makemore case
         return word in self.words
 
     def get_vocab_size(self): # INPUT vocabulary = number of symbols in input
-        return len(self.chars) + 1 # all the possible characters and special 0 token
+        return len(self.chars) + 1 # all the possible characters plus the special 0 token
+
+    def get_output_length(self):
+        return self.max_word_length + 1 # <START> token followed by word
 
     def encode(self, word):
         """
@@ -51,7 +55,7 @@ class CharDataset(Dataset): # original makemore case
         # print (f"__getitem__: idx = {idx}, word == {self.words[idx]}, data_mode = {self.data_mode}")
         if traceTensors:
             print(f"CharDataset: getitem: {idx=}") # randomly jumps among batches, but data builds ok below
-        word = self.words[idx].strip()
+        word = self.words[idx]
         assert word[0] != '|', f"ListOps input format not supported by data-mode WORDS"
         ix = self.encode(word) # tensor of type long
         N = self.block_size
@@ -264,7 +268,7 @@ def split_dataset(lines, block_size, shuffle=True):
 def lastOccurrenceDistances(ints):
     """
     Calculate the distance from the last occurrence of each element in the list:
-    
+
     Args:
     ints (list of int): A list of integers.
 
@@ -341,7 +345,7 @@ def create_words_datasets(input_file, block_size=None):
     chars = sorted(list(set(''.join(words))))
     vocab_size = len(chars) + 1
     if block_size is None:
-        block_size = 1 + max(len(word) for word in words) # +1 for starting 0
+        block_size = 1 + max(len(word) for word in words) # +1 for the starting 0
         print(f"create_words_datasets: computed {block_size=}")
     train_words, test_words = split_dataset(words, block_size)
     train_dataset = CharDataset(train_words, chars, block_size)
