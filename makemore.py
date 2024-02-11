@@ -39,7 +39,7 @@ import mambaminimal as mm # mambaminimal.py
 import cProfile
 import random
 
-from data_utilities import DataMode, DistanceMode, create_datasets, InfiniteDataLoader
+from data_utilities import DataMode, DistanceMode, create_datasets, InfiniteDataLoader, ascii_plot
 
 def setSeed(seed):
     random.seed(seed)
@@ -196,7 +196,10 @@ class Transformer(nn.Module):
             # print(f"Transformer: Given {len(idx)} in idx: {idx.transpose(0,1)=}")
             # print(f"\thave {len(targets)} targets: {targets.transpose(0,1)=}")
             assert idx.shape == targets.shape, f"Transformer: {idx.shape=} != {targets.shape=}"
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+            logits_view = logits.view(-1, logits.size(-1))
+            targets_view = targets.view(-1)
+            ascii_plot(logits_view, targets_view, title="Transformer: Logits and Targets")
+            loss = F.cross_entropy(logits_view, targets_view, ignore_index=-1)
 
         return logits, loss
 
@@ -286,12 +289,15 @@ class BoW(nn.Module):
         # run the bag of words context module
         x = self.context_block(x)
         # decode to next token probability
-        logits = self.lm_head(x)
+        logits = self.lm_head(x) # vocab_size
 
         # if we are given some desired targets also calculate the loss
         loss = None
         if targets is not None:
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+            logits_view = logits.view(-1, logits.size(-1))
+            targets_view = targets.view(-1)
+            loss = F.cross_entropy(logits_view, targets_view, ignore_index=-1)
+            ascii_plot(logits_view, targets_view, title="BoW: Logits and Targets")
 
         return logits, loss
 
@@ -404,7 +410,10 @@ class RNN(nn.Module):
             # Clip targets to ensure they are within the valid range [0, C-1]
             num_classes = logits.size(-1)
             targets_clipped = torch.clamp(targets, 0, num_classes - 1)
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets_clipped.view(-1), ignore_index=-1)
+            logits_view = logits.view(-1, logits.size(-1))
+            targets_view = targets_clipped.view(-1)
+            ascii_plot(logits_view, targets_view, title="RNN: Logits and Targets")
+            loss = F.cross_entropy(logits_view, targets_view, ignore_index=-1)
             # print(f"RNN: loss={loss}, {logits.shape=}")
 
         return logits, loss

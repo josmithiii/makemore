@@ -1,6 +1,7 @@
 import os
 import torch
 from torch.utils.data import Dataset
+from torch.nn import functional as F
 from enum import Enum
 from itertools import chain
 from torch.utils.data.dataloader import DataLoader
@@ -464,3 +465,39 @@ class InfiniteDataLoader:
             self.data_iter = iter(self.train_loader)
             batch = next(self.data_iter)
         return batch
+
+def ascii_plot(logits, targets, title="Logits and Targets", plot_every_n=100):
+    """
+    Plots logits and targets in ASCII, but only once every `plot_every_n` calls.
+
+    Args:
+    - logits (Tensor): The logits tensor of shape (batch_size, num_classes).
+    - targets (Tensor): The targets tensor of shape (batch_size,).
+    - title (str): Title of the plot.
+    - plot_every_n (int): Plot only once every this many calls.
+
+    Written by GPT-4T 2024-02-11
+    """
+    # Static variable to keep track of call count
+    if not hasattr(ascii_plot, "call_count"):
+        ascii_plot.call_count = 0  # Initialize on first call
+
+    # Check if it's time to plot
+    if ascii_plot.call_count % plot_every_n == 0:
+        # Normalize logits for better visualization
+        logits_softmax = F.softmax(logits, dim=1)
+
+        # Determine the max length for scaling the plot
+        max_val = logits_softmax.max()
+
+        print(f"{title}\n{'=' * len(title)}")
+        for i, (logit_row, target) in enumerate(zip(logits_softmax, targets)):
+            print(f"Sample {i}:")
+            for j, logit in enumerate(logit_row):
+                bar = "#" * int((logit / max_val) * 50)  # Scale the bar up to 50 characters
+                marker = "*" if j == target else " "
+                print(f"Class {j}: [{marker}{bar} ({logit:.2f})]")
+            print("-" * 60)
+
+    # Increment the call count
+    ascii_plot.call_count += 1
