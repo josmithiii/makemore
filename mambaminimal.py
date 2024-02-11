@@ -50,33 +50,71 @@ class ModelArgs:
     bias: bool = False
 
     def __post_init__(self):
+        print(f"ModelArgs({__file__}):__post_init__")
+        # print(vars(self))
+
         self.d_inner = int(self.expand * self.d_model)
 
         if self.dt_rank == 'auto':
             self.dt_rank = math.ceil(self.d_model / 16)
 
+        # print(f"ModelArgs({__file__}):__post_init__: {self.pad_vocab_size_multiple=}")
         if self.vocab_size % self.pad_vocab_size_multiple != 0:
             self.vocab_size += (self.pad_vocab_size_multiple
-                                - self.vocab_size % self.pad_vocab_size_multiple)
-
+                              - self.vocab_size % self.pad_vocab_size_multiple)
+            # print(f"""ModelArgs({__file__}):__post_init__: vocab_size set to {self.vocab_size=}
+            #        to make it a multiple of {self.pad_vocab_size_multiple}""")
 
 # For visualizations:
-defaultArgs = ModelArgs(d_model=16, n_layer=4, vocab_size=27, block_size=32)
+# default_args = ModelArgs(d_model=16, n_layer=4, vocab_size=27, block_size=32)
+
+def setArgs(model, args):
+    model.args = args if args != None else default_args
+    print(f"setArgs({__file__}):")
+    print(vars(args))
+    model.d_model = args.d_model
+    model.n_layer = args.n_layer
+    model.vocab_size = args.vocab_size
+    model.block_size = args.block_size
+    model.d_state = args.d_state
+    model.expand = args.expand
+    model.dt_rank = args.dt_rank
+    model.d_conv = args.d_conv
+    model.pad_vocab_size_multiple = args.pad_vocab_size_multiple
+    model.conv_bias = args.conv_bias
+    model.bias = args.bias
+
+    # Do everything that ModelArgs:__post_init__ does:
+    model.d_inner = int(model.expand * model.d_model)
+    if model.dt_rank == 'auto':
+        model.dt_rank = math.ceil(model.d_model / 16)
+    # print(f"ModelArgs({__file__}):__post_init__: {model.pad_vocab_size_multiple=}")
+    if model.vocab_size % model.pad_vocab_size_multiple != 0:
+        model.vocab_size += (model.pad_vocab_size_multiple
+                          - model.vocab_size % model.pad_vocab_size_multiple)
+        print(f"""ModelArgs({__file__}):__post_init__: vocab_size set to {model.vocab_size=}
+               to make it a multiple of {model.pad_vocab_size_multiple}""")
 
 class Mamba(nn.Module):
-    def __init__(self, args: ModelArgs = defaultArgs):
+    def __init__(self, args: ModelArgs = None):
         """Full Mamba model."""
         super().__init__()
-        self.args = args
+        print("MAMBA:__init__:")
 
+        setArgs(self,args)
+
+        # create the model:
+        
         self.embedding = nn.Embedding(args.vocab_size, args.d_model)
+
         self.layers = nn.ModuleList([ResidualBlock(args) for _ in range(args.n_layer)])
         self.norm_f = RMSNorm(args.d_model) # normalize layer by RMS and scale radii by a learned weighting
+
+        print(f"Mamba: {args.vocab_size=}")
 
         self.lm_head = nn.Linear(args.d_model, args.vocab_size, bias=False)
         self.lm_head.weight = self.embedding.weight  # Tie output projection to embedding weights.
                                                      # See "Weight Tying" paper
-        self.block_size = args.block_size # FIXME JOS: FIGURE OUT WHAT TO DO WITH THIS
 
     def get_block_size(self):
         return self.block_size
@@ -100,6 +138,7 @@ class Mamba(nn.Module):
 
         x = self.norm_f(x)
         logits = self.lm_head(x)
+        # print(f"mamba: forward: {logits.shape=}")
 
         # prv: return logits
 
@@ -360,6 +399,8 @@ class RMSNorm(nn.Module):
 
 if __name__ == '__main__':
 
+    print(f"=== __main__({__file__}):")
+
     # parse command line args
     parser = argparse.ArgumentParser(description="Make More")
     # system/input/output
@@ -399,8 +440,8 @@ if __name__ == '__main__':
         n_layer=args.n_layer,
         vocab_size=vocab_size,
         block_size=block_size,
-        # Mamba output size == block_size because it is a sequence to sequence map => no
-        # logits_size=logits_size,
+        # Mamba output size == block_size because it is a sequence to sequence map:
+        # Mamba logits size == vocab_size
         d_state=args.n_head, # too janky?
         expand=2, # FIXME: bring out state-expansion-factor parameter
         dt_rank='auto', # auto => d_model/16

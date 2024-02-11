@@ -27,9 +27,8 @@ from typing import List
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-from torch.utils.data import Dataset
-from torch.utils.data.dataloader import DataLoader
 from torch.utils.tensorboard import SummaryWriter
+from torch.utils.data.dataloader import DataLoader
 
 # -----------------------------------------------------------------------------
 # JOS:
@@ -37,28 +36,29 @@ from torch.utils.tensorboard import SummaryWriter
 import mambaminimal as mm # mambaminimal.py
 # defines class Mamba
 
-from enum import Enum
 import cProfile
 import random
+
+from data_utilities import DataMode, DistanceMode, create_datasets, InfiniteDataLoader
 
 def setSeed(seed):
     random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
 
+#traceTensors = True
 traceTensors = False
 
-traceTensorsXY = False
 #traceTensorsXY = True
+traceTensorsXY = False
 
 # None of these worked, but nnviz did, after creating defaultConfig below to use in "default constructors"
 # Perhaps one or more of these can work now:
 # N: from torch.utils.tensorboard import SummaryWriter
 # N: import hiddenlayer as hl
 # N: from ann_visualizer.visualize import ann_viz;
-# -----------------------------------------------------------------------------
 
-DataMode = Enum('DataMode', ['WORDS', 'QA', 'DISTANCE', 'DISTANCE_LEFT_JUSTIFIED'])
+# -----------------------------------------------------------------------------
 
 @dataclass
 class ModelConfig:
@@ -77,7 +77,7 @@ class ModelConfig:
     # block_size is important for Transformer and any model that works only on one input buffer at a time
     # (no recurrence).
 
-# For visualizations:
+# For visualizations which need a "default constructor":
 defaultConfig = ModelConfig(vocab_size=27, block_size=32, logits_size=27, n_layer=4, n_head=4, n_embd=16, n_embd2=16, data_mode=DataMode.WORDS)
 
 # -----------------------------------------------------------------------------
@@ -527,8 +527,6 @@ def generate(model, idx, max_new_tokens, temperature=1.0, do_sample=False, top_k
 @torch.no_grad()
 def print_word_samples(num=10):
     """ samples from the model and pretty prints the decoded samples """
-    print(f"print_word_samples: {data_mode=}")
-    assert data_mode == DataMode.WORDS, f"print_word_samples: {data_mode=} not expected - only WORDS expected"
     setSeed(43)
     X_init = torch.zeros(num, 1, dtype=torch.long).to(args.device) # generate num examples in parallel as one batch
     top_k = args.top_k if args.top_k != -1 else None
@@ -541,7 +539,7 @@ def print_word_samples(num=10):
         row = X_samp[i, 1:].tolist() # initial <START> token omitted
         crop_index = row.index(0) if 0 in row else len(row) # find the <STOP> token
         row = row[:crop_index] # take everything up to but not including <STOP> token
-        word_samp = train_dataset.decode_word(row) # convert the list of integers to a string
+        word_samp = train_dataset.decode(row) # convert the list of integers to a string
         # separately track samples that we have and have not seen before
         if train_dataset.contains(word_samp):
             train_samples.append(word_samp)
@@ -577,8 +575,8 @@ def evaluate(model, dataset, data_mode, batch_size=50, max_batches=None, make_gr
             hl_graph.save(gfname, format="png")
             print(f"Written: {gfname}.png")
 
-    doShuffle = (data_mode != DataMode.DISTANCE) # this is a memory task that shuffling would destroy
     # original: loader = DataLoader(dataset, shuffle=True, batch_size=batch_size, num_workers=0)
+    doShuffle = (data_mode != DataMode.DISTANCE) # this is a memory task that shuffling would destroy
     loader = DataLoader(dataset, shuffle=doShuffle, batch_size=batch_size, num_workers=0) # , batch_sampler=doShuffle)
     loader = DataLoader(dataset, shuffle=doShuffle, batch_size=batch_size, num_workers=0) # , batch_sampler=doShuffle)
     losses = []
@@ -587,7 +585,7 @@ def evaluate(model, dataset, data_mode, batch_size=50, max_batches=None, make_gr
         X, Y = batch
         if traceTensorsXY:
             print(f"evaluate: {X.shape=}\n{Y.shape=}")
-        logits, loss = model(X, Y)
+        logits, loss = model(X, Y) # ********************** MAIN EVENT **********************
         if traceTensorsXY:
             print(f"evaluate: {logits.shape=}")
         losses.append(loss.item())
@@ -607,392 +605,6 @@ def evaluate(model, dataset, data_mode, batch_size=50, max_batches=None, make_gr
 
     model.train() # reset model back to training mode
     return mean_loss
-
-# -----------------------------------------------------------------------------
-# helper functions for creating the training and test Datasets that emit words
-
-def lastOccurrenceDistances(ints):
-    """
-    Calculate the distance from the last occurrence of each element in the list:
-    
-    Args:
-    ints (list of int): A list of integers.
-
-    Returns:
-    lastOccurrenceDistances (list of int):
-      lastOccurrenceDistances[i] = distance backwards to last occurrence of i, or 0 if i is new.
-
-    Example usage:
-    ints = [1, 2, 3, 2, 4, 1, 2, 3, 4, 2]
-    distances = lastOccurrenceDistances(ints)
-    print("ints:", ints)
-    print("Distances:", distances)
-    """
-    nints = len(ints)
-    print(f"lastOccurrenceDistance: Received {nints} ints")
-    if traceTensors:
-        print(f"\t{ints=}")
-
-    lastSeen = {}  # Dictionary to track the last seen index of each item
-    distances = []  # List to store distances
-    for i, itm in enumerate(ints):
-        # Calculate distance from the last occurrence
-        lasti = lastSeen.get(itm, -1)
-        dist = i-lasti if (lasti >= 0) else 0
-        distances.append(dist)
-        lastSeen[itm] = i
-
-    if traceTensors:
-        print(f"lastOccurrenceDistance: Returning {len(distances)} distances:\n{distances}")
-
-    return distances
-
-class CharDataset(Dataset):
-
-    def __init__(self, mode, words, chars, block_size):
-        self.data_mode = mode  # DataMode.(WORDS|QA|DISTANCE)
-        self.words = words     # List of strings: names (WORDS) | ListOps examples (QA) | ints (DISTANCE)
-        if mode == DataMode.DISTANCE:
-            self.ints = [int(w) for w in words]
-            # print(f"ints = {self.ints}\n")
-            # self.lastOccurrenceDistances = {value: index for index, value in enumerate(self.ints)}
-            #  == dictionary mapping each int to its last occurrence (index)
-            self.lastOccurrenceDistances = lastOccurrenceDistances(self.ints)
-            # print(f"lastOccurrence = {self.lastOccurrenceDistances}\n")
-            maxLastOccurrence = max(self.lastOccurrenceDistances)
-            print(f"maximum lastOccurrence for {len(self.ints)} ints = {maxLastOccurrence}")
-            # assert maxLastOccurrence <= logits_size
-        self.chars = chars     # Set of all chars used in words
-        self.block_size = block_size # number of inputs (typically 1 for RNNs, max_word_length+1 for transformers (WORDS), etc.
-        self.stoi = {ch:i+1 for i,ch in enumerate(chars)} # +1 to reserve 0 for padding char
-        self.itos = {i:s for s,i in self.stoi.items()} # inverse mapping
-        self.unknown_index = -1
-
-    def __len__(self):
-        return len(self.words)
-
-    def contains(self, word):
-        return word in self.words
-
-    def get_vocab_size(self): # INPUT vocabulary = number of symbols in input
-        if self.data_mode == DataMode.DISTANCE:
-            vocab_size = max(self.ints) + 1 # number of tokens we need to be able to embed
-            print(f"CharDataset: DISTANCE: {vocab_size=}")
-            return vocab_size
-        elif self.data_mode == DataMode.WORDS:
-            return len(self.chars) + 1 # all the possible characters and special 0 token
-        elif self.data_mode == DataMode.QA:
-            return len(self.chars) + 1 # all the possible characters and special 0 token
-        else:
-            assert False, f"Unknown data_mode {self.data_mode=}"
-
-    def encode(self, word):
-        """
-        encode - convert str word into a list of ints, one per character and return them in a type long tensor.
-        """
-        # original: ix = torch.tensor([self.stoi[w] for w in word], dtype=torch.long)
-
-        # JOS 1: ix = torch.tensor([self.stoi.get(w, self.unknown_index) for w in word], dtype=torch.long)
-        # for i in range(len(ix)):
-        #     if ix[i] == self.unknown_index:
-        #         print(f"*** unknown char at index {i} == {word[i]}")
-        # assert all(ixi != self.unknown_index for ixi in ix), "Unknown chars in word " + word
-
-        ix = []
-        for w in word:
-            # print(f"\nencode: word == {word}\n")
-            iw = self.stoi.get(w, self.unknown_index)
-            if iw == self.unknown_index:
-                print(f"*** unknown char `{w}'\n")
-                assert False
-            assert iw != 0 # reserved for padding char
-            ix.append(iw)
-        ixt = torch.tensor(ix,dtype=torch.long)
-        ixt = torch.tensor(ix,dtype=torch.long)
-        return ixt
-
-    def decode_word(self, ix):
-        word = ''.join(self.itos[i] for i in ix)
-        return word
-
-    def max_index(self, ix):
-        print(f"max_index: {ix=}")
-        if len(ix)>0:
-            max_index, max_value = max(enumerate(ix), key=lambda pair: pair[1])
-            return max_index
-        else:
-            return -1
-
-    # def samplesToLastOccurrence(self, ix, idx):
-    #     stlo = 0
-    #     iolo = 0
-    #     for ixi in reversed(range(idx-1)):
-    #         if ix == self.ints[ixi]:
-    #             stlo = idx - ixi
-    #             iolo = ixi
-    #             break
-    #     # print(f"Last occurrence of ix = {ix} from index {idx} is at index {iolo} which is {stlo} samples earlier\n")
-    #     return stlo
-
-    def __getitem__(self, idx): # CharDataset.__getitem__: idx is an int addressing one word (line) in input:
-        # Return inputs and targets for one line of the input file (one training example).
-        # print (f"__getitem__: idx = {idx}, word == {self.words[idx]}, data_mode = {self.data_mode}")
-        if traceTensors:
-            print(f"getitem: {idx=}") # randomly jumps among batches, but data builds ok below
-        N = self.block_size
-        if self.data_mode == DataMode.WORDS:
-            word = self.words[idx].strip()
-            assert word[0] != '|', f"ListOps input format not supported by data-mode WORDS"
-            ix = self.encode(word) # tensor of type long
-            assert len(ix) <= N, f"getitem: input WORD of length {len(ix)} overflows input buffer {self.block_size=}"
-            x = torch.zeros(N, dtype=torch.long)
-            y = torch.zeros(N, dtype=torch.long)
-            Nix = len(ix)
-            x[1:1+Nix] = ix  # Copy 'ix' into 'x' starting at index 1: [0,   ix0, ix1, ..., ixNM2, ixNM1, 0, 0, ... 0]
-            y[:Nix] = ix     # Copy 'ix' into 'y' starting at index 0: [ix0, ix1, ix2, ..., ixNM1,     0, 0, 0, ... 0]
-            y[Nix+1:] = -1   # index -1 will mask the loss at the inactive locations
-        elif self.data_mode == DataMode.DISTANCE: # randomly ordered ints, right-justified in the block
-            iy0 = self.lastOccurrenceDistances[idx]
-            if traceTensors:
-                print(f"getitem: distance to last occurrence of self.ints[{idx}] is {iy0}")
-            x = torch.zeros(N, dtype=torch.long) # Cannot have -1s here because everything is a token for embedding, 0 is therefore the default input
-            idx0 = max(0,idx - N + 1) # include as much history as we can fit into the block == block or partial block
-            ix = self.ints[idx0:idx+1]  # all ints up to and including the latest at [idx]
-            ixt = torch.tensor(ix, dtype=x.dtype)
-            xs = N-len(ix) # starting index for ixt in x
-            x[xs:] = ixt
-            y = -torch.ones(N, dtype=torch.long)
-            # Only a problem for transformer:
-            # if iy0 >= self.block_size:
-            #     print(f"NOTE: distance to previous instance of self.ints[{idx}] is {iy0} which exceeds {self.block_size=}")
-            y[N-1] = iy0 # last element contains the answer (distance back to the last occurrence of latest input int)
-        elif self.data_mode == DataMode.DISTANCE_LEFT_JUSTIFIED: # randomly ordered ints
-            N = self.block_size
-            idx0 = max(0,idx - N + 1) # include as much history as we can fit into the block
-            ix = self.ints[idx0:idx+1]  # all ints up to and including the latest at idx
-            iy0 = self.lastOccurrenceDistances[ix[-1]]  # Using ix[-1] to safely get the last element
-            x = torch.zeros(N, dtype=torch.long)
-            ix_tensor = torch.tensor(ix, dtype=x.dtype)
-            assert len(ix) <= N, f"ix is longer ({len(ix)}) than the specified length {N=} of the tensor x."
-            x[:len(ix)] = ix_tensor
-            y = -torch.ones(N, dtype=torch.long)
-            y[min(len(ix)-1,N-1)] = iy0 # last element contains the answer (distance back to the last occurrence of latest input int)
-        elif self.data_mode == DataMode.QA:
-            word = self.words[idx].strip()
-            assert word[0] == '|', f"QA data-mode requires ListOps input format (.tsv), found word[0] = {word[0]}"
-            _, target, test = word.split('|')  # example received as "|target|test"
-            # print(f"\ntest == {test}\n\ntarget == {target}\n")
-            # Create this format:
-            # x: test ......
-            # y: .... target
-
-            # We seem to be in a multithreaded callback that cannot do this:
-            # print("=== AT DATA ENCODING BREAKPOINT ===")
-            # pdb.set_trace()
-
-            # print(f"\nEncoding test == {test}\n")
-            ix = self.encode(test)  # each char converted to an integer
-            # print(f"\nEncoding target == {target}\n")
-            iy = self.encode(target)  # each char of target converted to an integer
-            nx = len(ix)
-            ny = len(iy)
-            assert nx+ny < self.block_size, f"getitem: block_size {self.block_size=} must equal or exceed {nx=} + {ny=}"
-            x = torch.zeros(self.block_size, dtype=torch.long)
-            y = torch.zeros(self.block_size, dtype=torch.long)
-
-            # Convert ix to a torch.LongTensor if it's not already
-            ix_tensor = torch.tensor(ix, dtype=torch.long) if not isinstance(ix, torch.Tensor) else ix.long()
-
-            # Assign ix_tensor to the beginning of x
-            x[:nx] = ix_tensor
-
-            # Fill the rest of x with -1
-            x[nx:] = 0
-
-            # Fill the beginning of y with -1
-            y[:nx] = 0
-
-            # Convert iy to a torch.LongTensor if it's not already
-            iy_tensor = torch.tensor(iy, dtype=torch.long) if not isinstance(iy, torch.Tensor) else iy.long()
-
-            # Assign iy_tensor to the appropriate slice of y
-            y[nx:nx+ny] = iy_tensor
-
-        return x, y # inputs and targets
-
-def create_datasets(input_file, data_mode, block_size):
-    """
-    Create training and test datasets based on the input file, data mode, and block size.
-
-    Args:
-        input_file (str): The path to the input file.
-        data_mode (DataMode): The mode of the data, which can be DataMode.WORDS, DataMode.DISTANCE, or DataMode.QA.
-        block_size (int): The size of the data block.  Set to None to have it computed automatically and retrieve using get_vocab_size
-
-    Returns:
-        train_dataset (CharDataset): The training dataset.
-        test_dataset (CharDataset): The test dataset.
-    """
-    # code implementation...
-
-    # print("=== AT DATA LOADING BREAKPOINT ===")
-    # pdb.set_trace()
-
-    # preprocessing of the input text file
-    with open(input_file, 'r') as f:
-        data = f.read() # read whole file into a single str
-
-    words = data.splitlines() # words[i] can be a word, ListOps example, or int
-    words = [w.strip() for w in words] # get rid of any leading or trailing white space
-    words = [w for w in words if w] # get rid of any empty strings
-    chars = sorted(list(set(''.join(words)))) # all the possible characters
-    vocab_size = len(chars) + 1 # add one for special separation token
-    if block_size == None:
-        if data_mode == DataMode.WORDS: # original makemore case - input = list of words such as names
-            block_size = vocab_size
-            print(f"create_datasets: block_size set to {vocab_size=} for WORDS")
-        elif data_mode == DataMode.DISTANCE or data_mode == DataMode.DISTANCE_LEFT_JUSTIFIED:
-            block_size = 32
-            print(f"create_datasets: block_size arbitrarily set to {block_size} for {data_mode}")
-        elif data_mode == DataMode.QA: # ListOps case [added to makemore]
-            block_size = 1 + max(len(w) for w in words)
-            print(f"create_datasets: block_size set to measured maximum example length {block_size} for QA")
-        else:
-            assert False, f"create_datasets: unknown DataMode {data_mode}"
-
-    basename = os.path.basename(input_file)
-    name,ext = os.path.splitext(basename)
-
-    if data_mode == DataMode.WORDS: # original makemore case - input = list of words such as names
-        assert ext == '.txt', f"DataMode.WORDS requires .txt input format, got {ext}"
-        max_word_length = max(len(w) for w in words)
-    elif data_mode == DataMode.DISTANCE: # distance ints
-        assert ext == '.txt', "DataMode.DISTANCE requires .txt input format"
-        if name == 'names': # original makemore default
-            print(f"create_datasets: Generating DISTANCE DATA AUTOMATICALLY since no input DISTANCE data file-name specified")
-
-            if block_size == 8 and batch_size == 1: # doing a small toy example
-                print(f"create_datasets: *** USING FOUR-BLOCK DATA SET FOR TESTING ***")
-                numExamples = 4*block_size
-            else:
-                numExamples = 32033 # same as original names.txt why not
-
-            numInts = 27 # same as original vocab_size in names.txt
-            print(f"create_datasets: DISTANCE benchmark: Generating {numExamples} ints between 1 and {numInts}")
-            if 0:
-                print(f"create_datasets: === Generating {numInts} looping test ints")
-                ints = range(1,numInts+1)
-            else:
-                ints = [random.randint(1, numInts) for _ in range(numExamples)] # avoid 0 which means "no input"
-            words = [str(i) for i in ints] # FIXME: should not need this - revise data structures
-            chars = sorted(list(set(''.join(words)))) # gross - not used - just to eliminate misleading printouts
-        else:
-            ints = [int(w) for w in words]
-        max_int = max(ints)
-        max_word_length = block_size # number of samples delay supported
-        print(f"create_datasets: DISTANCE data_mode")
-        #print(f"\twords = {words}")
-        #print(f"\tints = {ints}")
-        print(f"\tmax_int = {max_int}")
-    elif data_mode == DataMode.QA: # ListOps case [added to makemore]
-        assert ext == '.tsv', "DataMode.QA requires .tsv input format"
-        lines = words # Each line is a complete ListOps example in the format "|solution|problem"
-        # targets, tests = lines.toString().split('\t',1)
-        # GPT-4's fancy method: targets, tests = zip(*[line.split('\t', 1) for line in lines])
-
-        targets = []
-        tests = []
-        words = [] # hacky pack for CharDataset
-
-        for line in lines:
-
-            target, test = line.split('\t', 1)
-
-            trgs = target.strip()
-            assert trgs != '', "Target is empty after stripping"
-            targets.append(trgs)
-
-            ts = test.strip()
-            assert ts != '', "Test is empty after stripping"
-            tests.append(ts)
-
-            # My version: words.append('|' + trgs + '|' + ts)
-            words.append('|' + '|'.join([trgs, ts])) # GPT-4 wins again
-
-        chars_set = set(''.join(words))
-        chars_set.discard('|')
-        chars = sorted(list(chars_set))
-        max_target_length = max(len(w) for w in targets)
-        max_test_length   = max(len(w) for w in tests)
-        max_word_length   = max_target_length + max_test_length # format is test...\n ...target, nonoverlapping
-
-        # print("=== AT DATA LOADING BREAKPOINT ===")
-        # pdb.set_trace()
-
-
-    print(f"\ncreate_datasets:")
-    print(f"number of examples in the dataset: {len(words)}")
-    print(f"input block size: {block_size}")
-    print(f"number of unique characters in the vocabulary: {len(chars)}")
-    print(f"chars: {''.join(chars)}")
-
-    # create_datasets: partition the input data into a training and the test set
-    nWords = len(words)
-    test_set_size = max(block_size, int(nWords * 0.1)) # 10% of the training set, or up to 1000 examples
-    assert nWords > 2*test_set_size, f"Only {nWords} words of data for {block_size=}"
-    if data_mode != DataMode.DISTANCE:
-        rp = torch.randperm(len(words)).tolist()
-    else:
-        rp = range(len(words)) # cannot permute this memory task
-    train_words = [words[i] for i in rp[:-test_set_size]]
-    test_words = [words[i] for i in rp[-test_set_size:]]
-    print(f"split up the dataset into {len(train_words)} training examples and {len(test_words)} test examples")
-
-    # wrap in dataset objects
-
-    train_dataset = CharDataset(data_mode, train_words, chars, block_size)
-    test_dataset = CharDataset(data_mode, test_words, chars, block_size)
-    
-    return train_dataset, test_dataset, block_size
-
-from torch.utils.data import Sampler
-
-class LoopingSequentialSampler(Sampler):
-    def __init__(self, data_source):
-        self.data_source = data_source
-
-    def __iter__(self):
-        while True:  # Loop indefinitely
-            for i in range(len(self.data_source)):
-                yield i
-
-    def __len__(self):
-        return float('inf')  # Technically, the length is infinite
-
-
-class InfiniteDataLoader:
-    """
-    this is really hacky and I'm not proud of it, but there doesn't seem to be
-    a better way in PyTorch to just create an infinite dataloader?
-    """
-
-    def __init__(self, dataset, **kwargs):
-        doShuffle = (data_mode != DataMode.DISTANCE) # this is a memory task that shuffling would destroy
-        print(f"{doShuffle=}")
-        if doShuffle:
-            train_sampler = torch.utils.data.RandomSampler(dataset, replacement=True, num_samples=int(1e10))
-        else:
-            train_sampler = LoopingSequentialSampler(dataset)
-        self.train_loader = DataLoader(dataset, sampler=train_sampler, **kwargs)
-        self.data_iter = iter(self.train_loader)
-
-    def next(self):
-        try:
-            batch = next(self.data_iter)
-        except StopIteration: # this will technically only happen after 1e10 samples... (i.e. basically never)
-            self.data_iter = iter(self.train_loader)
-            batch = next(self.data_iter)
-        return batch
 
 # -----------------------------------------------------------------------------
 if __name__ == '__main__':
@@ -1027,6 +639,7 @@ if __name__ == '__main__':
     parser.add_argument('--learning-rate', '-l', type=float, default=5e-4, help="learning rate")
     parser.add_argument('--weight-decay', '-w', type=float, default=0.01, help="weight decay")
     args = parser.parse_args()
+    print(f"=== __main__({__file__}):")
     print(vars(args))
 
     # system inits
@@ -1047,17 +660,19 @@ if __name__ == '__main__':
         return dm
 
     data_mode = str2dm(args.data_mode)
-    print(f"dataset determined that: {data_mode=}")
+    print(f"{data_mode=}")
 
     # init datasets
 
     block_size = None if args.block_size <= 0 else args.block_size
+    print(f"{block_size=}")
 
     train_dataset, test_dataset, block_size = create_datasets(args.input_file, data_mode, block_size)
 
     embedding_size = args.embedding_size
     logits_size = args.logits_size
     vocab_size = train_dataset.get_vocab_size()
+    print(f"train_dataset says {vocab_size=}")
     if logits_size == None:
         logits_size = vocab_size
         print(f"main: logits_size set to {vocab_size=}")
@@ -1067,26 +682,13 @@ if __name__ == '__main__':
 #        if max(train_dataset(:,
 
     print(f"+++ dataset determined that: {vocab_size=}")
-    print(f"test_dataset: {test_dataset=}")
+    print(f"test_dataset: {test_dataset[0]=}")
     # init model - FIXME: For DataMode.DISTANCE, output an unsigned int instead of (too many) logits
     config = ModelConfig(vocab_size=vocab_size, block_size=block_size, logits_size=logits_size,
                          n_layer=args.n_layer, n_head=args.n_head,
                          n_embd=args.n_embd, n_embd2=args.n_embd2, data_mode=data_mode)
 
-    mambaConfig = mm.ModelArgs(
-        d_model=args.n_embd,
-        n_layer=args.n_layer,
-        vocab_size=vocab_size,
-        block_size=block_size,
-        # Mamba output size == block_size because it is a sequence to sequence map => no
-        # logits_size=logits_size,
-        d_state=args.n_head, # too janky?
-        expand=2, # FIXME: bring out state-expansion-factor parameter
-        dt_rank='auto', # auto => d_model/16
-        d_conv=4, # Conv1d kernel size
-        pad_vocab_size_multiple=8, # Forces vocab_size to be a multiple of this
-        conv_bias=True,
-        bias=False)
+    print(f"main: {vocab_size=}")
 
     if args.type == 'transformer':
         model = Transformer(config)
@@ -1101,6 +703,20 @@ if __name__ == '__main__':
     elif args.type == 'bow':
         model = BoW(config)
     elif args.type == 'mamba':
+        mambaConfig = mm.ModelArgs(
+            d_model=args.n_embd,
+            n_layer=args.n_layer,
+            vocab_size=vocab_size,
+            block_size=block_size,
+            # Mamba output size == block_size because it is a sequence to sequence map:
+            # Mamba logits size == vocab_size
+            d_state=args.n_head, # too janky?
+            expand=2, # FIXME: bring out state-expansion-factor parameter
+            dt_rank='auto', # auto => d_model/16
+            d_conv=4, # Conv1d kernel size
+            pad_vocab_size_multiple=1, # Forces vocab_size to be a multiple of this
+            conv_bias=True,
+            bias=False)
         model = mm.Mamba(mambaConfig)
     else:
         raise ValueError(f'model type {args.type} is not recognized')
@@ -1110,14 +726,15 @@ if __name__ == '__main__':
         print("resuming from existing model in the workdir")
         model.load_state_dict(torch.load(os.path.join(args.work_dir, 'model.pt')))
     if args.sample_only:
-        print_word_samples(block_size)
+        print_word_samples(block_size,data_mode)
         sys.exit()
 
     # init optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay, betas=(0.9, 0.99), eps=1e-8)
 
     # init dataloader
-    batch_loader = InfiniteDataLoader(train_dataset, batch_size=args.batch_size, pin_memory=True, num_workers=args.num_workers)
+    shuffle = (data_mode != DataMode.DISTANCE) # this is a memory task that shuffling would destroy
+    batch_loader = InfiniteDataLoader(train_dataset, shuffle, batch_size=args.batch_size, pin_memory=True, num_workers=args.num_workers)
 
     # training loop
     best_loss = None
