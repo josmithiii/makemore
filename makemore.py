@@ -569,20 +569,21 @@ def evaluate(model, dataset, data_mode, batch_size=50, max_batches=None, make_gr
 
     # Output model diagram if requested:
     if make_graphs:
-        ann_viz(model)
+        # nnviz on the command line works. These don't:
+        # ann_viz(model)
         trySummaryWriter = False
-        tryHiddenLayer = False
         if trySummaryWriter:
             writer = SummaryWriter()
             dummy_input = torch.randn(1, len(dataset), batch_size)
             writer.add_graph(model, dummy_input)
             writer.close()
-        if tryHiddenLayer:
-            hl_graph = hl.build_graph(model, test_dataset)  # Adjust the input shape
-            hl_graph.theme = hl.graph.THEMES["blue"].copy()
-            gfname = "model_visualization"
-            hl_graph.save(gfname, format="png")
-            print(f"Written: {gfname}.png")
+        # tryHiddenLayer = False
+        # if tryHiddenLayer:
+        #     hl_graph = hl.build_graph(model, test_dataset)  # Adjust the input shape
+        #     hl_graph.theme = hl.graph.THEMES["blue"].copy()
+        #     gfname = "model_visualization"
+        #     hl_graph.save(gfname, format="png")
+        #     print(f"Written: {gfname}.png")
 
     # original: loader = DataLoader(dataset, shuffle=True, batch_size=batch_size, num_workers=0)
     doShuffle = (data_mode != DataMode.DISTANCE) # this is a memory task that shuffling would destroy
