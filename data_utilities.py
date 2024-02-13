@@ -177,8 +177,6 @@ class DistanceDataset(Dataset):
         self.occurrences = occurrences # same
         self.block_size = block_size   # number of inputs
         self.unknown_index = -1
-        maxlen = max(len(test) for test in ints) # ints = [[test1], [test2], ...]
-        assert self.block_size >= maxlen,  f"DistanceDataset:__init__: {self.block_size=} must not be less than max test length = {maxlen}"
 
     def __len__(self):
         return len(self.ints)
@@ -188,7 +186,7 @@ class DistanceDataset(Dataset):
 
     def get_vocab_size(self): # INPUT vocabulary = number of symbols in input
         vocab_size = max(chain.from_iterable(self.ints)) + 1 # number of tokens we need to be able to embed - add '0'
-        print(f"DistanceDataset: {vocab_size=}")
+        print(f"CharDataset: DISTANCE: {vocab_size=}")
         return vocab_size
 
     def encode(self, word):

@@ -621,7 +621,7 @@ if __name__ == '__main__':
     # parse command line args
     parser = argparse.ArgumentParser(description="Make More")
     # system/input/output
-    parser.add_argument('--input-file', '-i', type=str, default='./data/words/names.txt', help="input text file, where .txt suffix => one word per line to make more of, while .tsv => <answer><tab><prompt> each line (e.g., ListOps data)")
+    parser.add_argument('--input-file', '-i', type=str, default=None, help="input text file, where .txt suffix => one word per line to make more of, while .tsv => <answer><tab><prompt> each line (e.g., ListOps data)")
     parser.add_argument('--work-dir', '-o', type=str, default='out', help="output working directory")
     parser.add_argument('--data-mode', type=str, default="words", help="data type: (words|qa|distance|distance-exp)")
     # input/output sizes and dimensionalities
@@ -671,12 +671,23 @@ if __name__ == '__main__':
     data_mode = str2dm(args.data_mode)
     print(f"{data_mode=}")
 
+    input_file = args.input_file
+
+    if input_file == None:
+        match data_mode:
+            case DataMode.WORDS:
+                input_file = './data/words/names.txt'
+            case DataMode.QA:
+                input_file = './data/listops/data.txt'
+            case DataMode.DISTANCE:
+                input_file = './data/distance/dist1.txt'
+
     # init datasets
 
     block_size = None if args.block_size <= 0 else args.block_size
     print(f"{block_size=}")
 
-    train_dataset, test_dataset, block_size = create_datasets(args.input_file, data_mode, block_size)
+    train_dataset, test_dataset, block_size = create_datasets(input_file, data_mode, block_size)
 
     embedding_size = args.embedding_size
     logits_size = args.logits_size
