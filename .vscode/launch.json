@@ -15,7 +15,7 @@
                 "--batch-size",
                 "1",
                 "--block-size",
-                "32", // must be at least max word length
+                "128", // number of ints in a block
                 "--type",
                 "gru",
                 "--max-steps",
@@ -55,6 +55,6 @@
             "stopOnEntry": false,
             "justMyCode": false,
             "showReturnValue": true
-        } 
+        }
     ]
 }
