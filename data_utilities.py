@@ -3,7 +3,7 @@ import torch
 from torch.utils.data import Dataset
 from torch.nn import functional as F
 from enum import Enum
-from itertools import chain
+from itertools import chain, islice
 from torch.utils.data.dataloader import DataLoader
 
 DataMode = Enum('DataMode', ['WORDS', 'QA', 'DISTANCE', 'DISTANCE_LEFT_JUSTIFIED'])
@@ -464,7 +464,7 @@ class InfiniteDataLoader:
             batch = next(self.data_iter)
         return batch
 
-def ascii_plot(logits, targets, title="Logits and Targets", plot_every_n=100):
+def ascii_plot(logits, targets, title="Logits and Targets", plot_every_n=100, max_per_batch=1):
     """
     Plots logits and targets in ASCII, but only once every `plot_every_n` calls.
 
@@ -473,6 +473,7 @@ def ascii_plot(logits, targets, title="Logits and Targets", plot_every_n=100):
     - targets (Tensor): The targets tensor of shape (batch_size,).
     - title (str): Title of the plot.
     - plot_every_n (int): Plot only once every this many calls.
+    - max_per_batch (int): Plot only this many per batch (0 for all)
 
     Written by GPT-4T 2024-02-11
     """
@@ -484,13 +485,12 @@ def ascii_plot(logits, targets, title="Logits and Targets", plot_every_n=100):
     if ascii_plot.call_count % plot_every_n == 0:
         # Normalize logits for better visualization
         logits_softmax = F.softmax(logits, dim=1)
-
-        # Determine the max length for scaling the plot
-        max_val = logits_softmax.max()
-
+        max_per_batch = logits.shape[0] if max_per_batch == 0 or max_per_batch is None else max_per_batch
+        max_per_batch = min(max_per_batch, len(logits_softmax), len(targets))
+        max_val = logits_softmax.max() # max length for scaling the plot
         print(f"{title}\n{'=' * len(title)}")
-        for i, (logit_row, target) in enumerate(zip(logits_softmax, targets)):
-            print(f"Sample {i}:")
+        for i, (logit_row, target) in enumerate(islice(zip(logits_softmax, targets), max_per_batch)):
+            print(f"Batch Sample {i}:")
             for j, logit in enumerate(logit_row):
                 bar = "#" * int((logit / max_val) * 50)  # Scale the bar up to 50 characters
                 marker = "*" if j == target else " "
