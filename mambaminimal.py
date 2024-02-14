@@ -33,6 +33,7 @@ from einops import rearrange, repeat, einsum
 # JOS:
 import argparse
 import random
+from data_utilities import ascii_plot
 # Keras only: from ann_visualizer.visualize import ann_viz;
 
 @dataclass
