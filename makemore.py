@@ -626,13 +626,13 @@ def evaluate(model, dataset, data_mode, batch_size=50, max_batches=None, make_gr
 
 # %%
 
-assume_jupyter = False if __name__ == '__main__' else True
+# We are not a module, so either in Jupyter or standalone Python
 
-if assume_jupyter:
-    # For simulating command line arguments in Jupyter:
-    args_list = "--data-mode words".split()
-else:
+print(f"=== {__name__}({__file__}):")
 
+# failed to work: assume_jupyter = __name__ != '__main__'
+
+if __name__ == '__main__':
     # parse command line args
     parser = argparse.ArgumentParser(description="Make More")
     # system/input/output
@@ -662,11 +662,13 @@ else:
     parser.add_argument('--batch-size', '-b', type=int, default=1, help="batch size during optimization")
     parser.add_argument('--learning-rate', '-l', type=float, default=5e-4, help="learning rate")
     parser.add_argument('--weight-decay', '-w', type=float, default=0.01, help="weight decay")
-    if assume_jupyter:
+
+    if False: # was the failed flag assume_jupyter:
+        args_list = "--data-mode words".split() # test example - EDIT THIS
         args = parser.parse_args(args_list)
     else:
         args = parser.parse_args()
-    print(f"=== __main__({__file__}):")
+
     print(vars(args))
 
     # system inits
