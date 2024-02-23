@@ -62,6 +62,13 @@ traceTensorsXY = False
 # N: import hiddenlayer as hl
 # N: from ann_visualizer.visualize import ann_viz;
 
+# To try:
+# https://www.youtube.com/watch?v=ChfEO8l-fas&t=1139s
+
+# See also:
+# Works: ./tdot.py
+# Works so far: ./tkerasviz.py
+
 # -----------------------------------------------------------------------------
 
 # %%
