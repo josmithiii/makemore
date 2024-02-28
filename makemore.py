@@ -340,6 +340,25 @@ class RNNCell(nn.Module):
         ht = F.tanh(self.xh_to_h(xh))
         return ht
 
+class TRNNCell(nn.Module):
+    """
+    same job as RNNCell but with truncation after L time steps.
+    """
+    def __init__(self, config=defaultConfig):
+        super().__init__()
+        self.xh_to_h = nn.Linear(config.n_embd + config.n_embd2, config.n_embd2)
+        self.delayLine = DelayLine(config.block_size, config.n_embd2)
+
+    def forward(self, xt, hprev):
+        print(f"TRNNCell::forward: {xt.shape=}, {hprev.shape=}")
+        xh = torch.cat([xt, hprev], dim=1)
+        # print(f"TRNNCell::forward: {xh.shape=}")
+        ht = F.tanh(self.xh_to_h(xh))
+        htd = self.delayLine(ht) # h_{t-L}
+        htt = ht - htd
+        print(f"TRNNCell::forward: {ht.shape=}, {htd.shape=}, {htt.shape=}")
+        return htt
+
 class GRUCell(nn.Module):
     """
     same job as RNN cell, but a bit more complicated recurrence formula
@@ -379,6 +398,8 @@ class RNN(nn.Module):
             print(f"\nRNN: token embedding shape is num_tokens x n_embd: {(config.vocab_size+1)=} by {config.n_embd=}")
         if cell_type == 'rnn':
             self.cell = RNNCell(config)
+        elif cell_type == 'trnn':
+            self.cell = TRNNCell(config)
         elif cell_type == 'gru':
             self.cell = GRUCell(config)
         self.lm_head = nn.Linear(config.n_embd2, self.logits_size)
@@ -405,6 +426,7 @@ class RNN(nn.Module):
         hiddens = []
         for i in range(t):
             xt = emb[:, i, :] # (b, n_embd)
+            print(f"RNN::forward: {xt.shape=}, {hprev.shape=}")
             ht = self.cell(xt, hprev) # (b, n_embd2)
             hprev = ht
             hiddens.append(ht)
@@ -662,7 +684,7 @@ if __name__ == '__main__':
     parser.add_argument('--sample-only', action='store_true', help="just sample from the model and quit, don't train")
     parser.add_argument('--top-k', type=int, default=-1, help="top-k for sampling, -1 means no top-k")
     # model
-    parser.add_argument('--type', type=str, default='transformer', help="model class type to use, bigram|mlp|rnn|gru|bow|transformer|mamba")
+    parser.add_argument('--type', type=str, default='transformer', help="model class type to use, bigram|mlp|rnn|trnn|gru|bow|transformer|mamba")
     parser.add_argument('--n-layer', type=int, default=4, help="number of layers")
     parser.add_argument('--n-head', type=int, default=4, help="number of heads (in a transformer)")
     parser.add_argument('--n-embd', type=int, default=64, help="number of feature channels in the model")
@@ -747,6 +769,8 @@ if __name__ == '__main__':
         model = MLP(config)
     elif args.type == 'rnn':
         model = RNN(config, cell_type='rnn')
+    elif args.type == 'trnn':
+        model = RNN(config, cell_type='trnn')
     elif args.type == 'gru':
         model = RNN(config, cell_type='gru')
     elif args.type == 'bow':
