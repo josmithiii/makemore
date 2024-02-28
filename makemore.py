@@ -346,14 +346,18 @@ class TRNNCell(nn.Module):
     """
     def __init__(self, config=defaultConfig):
         super().__init__()
-        self.xh_to_h = nn.Linear(config.n_embd + config.n_embd2, config.n_embd2) # BZZZT! THIS IS NOT INVERTIBLE - ABORT TRNNCell for now
+        # self.xh_to_h = nn.Linear(config.n_embd + config.n_embd2, config.n_embd2) # Need something invertible:
+        self.x_to_h = nn.Linear(config.n_embd, config.n_embd2)  # Project input to hidden state size
+        # And SKIP this: self.h_to_h = nn.Linear(config.n_embd2, config.n_embd2) # Transform previous hidden state
+        # and this: next_hidden_state = torch.relu(self.input_to_h(input) + self.h_to_h(previous_hidden_state))
         self.delayList = DelayList(config.block_size)
 
     def forward(self, xt, h_prev):
         print(f"TRNNCell::forward: {xt.shape=}, {h_prev.shape=}")
-        xh = torch.cat([xt, h_prev], dim=1)
+        # xh = torch.cat([xt, h_prev], dim=1)
         # print(f"TRNNCell::forward: {xh.shape=}")
-        ht = F.tanh(self.xh_to_h(xh))
+        # ht = F.tanh(self.xh_to_h(xh))
+        ht = h_prev + F.tanh(self.x_to_h(xt))
         htd = self.delayList(ht) # h_{t-L}
         htt = ht - htd
         print(f"TRNNCell::forward: {ht.shape=}, {htd.shape=}, {htt.shape=}")
