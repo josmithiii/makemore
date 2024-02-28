@@ -43,6 +43,8 @@ import random
 
 from data_utilities import DataMode, DistanceMode, create_datasets, InfiniteDataLoader, ascii_plot
 
+from jos import DelayLine
+
 def setSeed(seed):
     random.seed(seed)
     torch.manual_seed(seed)
