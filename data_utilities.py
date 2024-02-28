@@ -347,7 +347,7 @@ def create_words_datasets(input_file, block_size=None):
     vocab_size = len(chars) + 1
     if block_size is None:
         block_size = 1 + max(len(word) for word in words) # +1 for the starting 0
-        print(f"create_words_datasets: computed {block_size=}")
+        print(f"create_words_datasets: computed {block_size=} == 1 + max(len(word)) for word in words")
     train_words, test_words = split_dataset(words, block_size)
     train_dataset = CharDataset(train_words, chars, block_size)
     test_dataset = CharDataset(test_words, chars, block_size)

@@ -24,3 +24,4 @@ echo TEST 6 && python $MAKEMORE --input "$DISTANCE_DATA" --data-mode "distance" 
 say All tests completed with error code 0 && \
 say complete || \
 say failed
+echo DONE (kill tail with ^C)

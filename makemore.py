@@ -43,7 +43,7 @@ import random
 
 from data_utilities import DataMode, DistanceMode, create_datasets, InfiniteDataLoader, ascii_plot
 
-from jos import DelayLine
+from jos import DelayList, printObjects
 
 def setSeed(seed):
     random.seed(seed)
@@ -335,8 +335,8 @@ class RNNCell(nn.Module):
         super().__init__()
         self.xh_to_h = nn.Linear(config.n_embd + config.n_embd2, config.n_embd2)
 
-    def forward(self, xt, hprev):
-        xh = torch.cat([xt, hprev], dim=1)
+    def forward(self, xt, h_prev):
+        xh = torch.cat([xt, h_prev], dim=1)
         ht = F.tanh(self.xh_to_h(xh))
         return ht
 
@@ -346,15 +346,15 @@ class TRNNCell(nn.Module):
     """
     def __init__(self, config=defaultConfig):
         super().__init__()
-        self.xh_to_h = nn.Linear(config.n_embd + config.n_embd2, config.n_embd2)
-        self.delayLine = DelayLine(config.block_size, config.n_embd2)
+        self.xh_to_h = nn.Linear(config.n_embd + config.n_embd2, config.n_embd2) # BZZZT! THIS IS NOT INVERTIBLE - ABORT TRNNCell for now
+        self.delayList = DelayList(config.block_size)
 
-    def forward(self, xt, hprev):
-        print(f"TRNNCell::forward: {xt.shape=}, {hprev.shape=}")
-        xh = torch.cat([xt, hprev], dim=1)
+    def forward(self, xt, h_prev):
+        print(f"TRNNCell::forward: {xt.shape=}, {h_prev.shape=}")
+        xh = torch.cat([xt, h_prev], dim=1)
         # print(f"TRNNCell::forward: {xh.shape=}")
         ht = F.tanh(self.xh_to_h(xh))
-        htd = self.delayLine(ht) # h_{t-L}
+        htd = self.delayList(ht) # h_{t-L}
         htt = ht - htd
         print(f"TRNNCell::forward: {ht.shape=}, {htd.shape=}, {htt.shape=}")
         return htt
@@ -371,18 +371,18 @@ class GRUCell(nn.Module):
         self.xh_to_r = nn.Linear(config.n_embd + config.n_embd2, config.n_embd2)
         self.xh_to_hbar = nn.Linear(config.n_embd + config.n_embd2, config.n_embd2)
 
-    def forward(self, xt, hprev):
+    def forward(self, xt, h_prev):
         # first use the reset gate to wipe some channels of the hidden state to zero
-        xh = torch.cat([xt, hprev], dim=1)
+        xh = torch.cat([xt, h_prev], dim=1)
         r = F.sigmoid(self.xh_to_r(xh))
-        hprev_reset = r * hprev
+        h_prev_reset = r * h_prev
         # calculate the candidate new hidden state hbar
-        xhr = torch.cat([xt, hprev_reset], dim=1)
+        xhr = torch.cat([xt, h_prev_reset], dim=1)
         hbar = F.tanh(self.xh_to_hbar(xhr))
         # calculate the switch gate that determines if each channel should be updated at all
         z = F.sigmoid(self.xh_to_z(xh))
         # blend the previous hidden state and the new candidate hidden state
-        ht = (1 - z) * hprev + z * hbar
+        ht = (1 - z) * h_prev + z * hbar
         return ht
 
 class RNN(nn.Module):
@@ -392,7 +392,7 @@ class RNN(nn.Module):
         self.block_size = config.block_size # in
         self.logits_size = config.logits_size # out
         self.vocab_size = config.vocab_size # embedding size
-        self.start = nn.Parameter(torch.zeros(1, config.n_embd2)) # the starting hidden state
+        self.start = nn.Parameter(torch.zeros(1, config.n_embd2)) # the starting hidden state for batch-size 1
         self.wte = nn.Embedding(config.vocab_size+1, config.n_embd) # token embeddings table, +1 for NULL
         if traceTensors:
             print(f"\nRNN: token embedding shape is num_tokens x n_embd: {(config.vocab_size+1)=} by {config.n_embd=}")
@@ -419,21 +419,27 @@ class RNN(nn.Module):
         # embed all the integers up front and all at once for efficiency
         if traceTensors:
             print(f"\nRNN: === AT DATA EMBEDDING BREAKPOINT:\n{tokens=}")
-        emb = self.wte(tokens) # (b, t, n_embd)
+        emb = self.wte(tokens) # (b, t, n_embd2)
 
         # sequentially iterate over the inputs and update the RNN state each tick
-        hprev = self.start.expand((b, -1)) # expand out the batch dimension
-        hiddens = []
-        for i in range(t):
-            xt = emb[:, i, :] # (b, n_embd)
-            print(f"RNN::forward: {xt.shape=}, {hprev.shape=}")
-            ht = self.cell(xt, hprev) # (b, n_embd2)
-            hprev = ht
+        h_prev = self.start.expand((b, -1)) # "expand out the batch dimension" to convert (1, n_embd2) to (b, n_embd2) using b aliases
+        hiddens = [] # collect t hidden states in a list:
+        for i in range(t): # --- RNN INFERENCE HERE ---
+            xt = emb[:, i, :] # (b, n_embd2)
+            # print(f"RNN::forward: {xt.shape=}, {h_prev.shape=}")
+            ht = self.cell(xt, h_prev) # (b, n_embd2)
+            h_prev = ht # RNN feedback here
             hiddens.append(ht)
 
         # decode the outputs
-        hidden = torch.stack(hiddens, 1) # (b, t, n_embd2)
-        logits = self.lm_head(hidden)
+        hidden = torch.stack(hiddens, 1) # (b, n_embd2)[0:t-1] -> (b, t, n_embd2)
+        print(f"{hidden.shape=}")
+        logits = self.lm_head(hidden) # (b, t, logits_size)
+        print(f"{logits.shape=}")
+        bl, tl, ll = logits.size()
+        assert bl == b, f"RNN: forward: batch confusion"
+        assert tl == t, f"RNN: forward: t confusion"
+        assert ll == config.logits_size, f"RNN: forward: logits confusion"
 
         # if we are given some desired targets also calculate the loss
         loss = None
@@ -690,7 +696,7 @@ if __name__ == '__main__':
     parser.add_argument('--n-embd', type=int, default=64, help="number of feature channels in the model")
     parser.add_argument('--n-embd2', type=int, default=64, help="number of feature channels elsewhere in the model")
     # optimization
-    parser.add_argument('--batch-size', '-b', type=int, default=1, help="batch size during optimization")
+    parser.add_argument('--batch-size', '-b', type=int, default=2, help="batch size during optimization")
     parser.add_argument('--learning-rate', '-l', type=float, default=5e-4, help="learning rate")
     parser.add_argument('--weight-decay', '-w', type=float, default=0.01, help="weight decay")
 
@@ -835,7 +841,8 @@ if __name__ == '__main__':
 
         # calculate the gradient, update the weights
         model.zero_grad(set_to_none=True)
-        loss.backward()
+        torch.autograd.set_detect_anomaly(True) # until bugs found
+        loss.backward(retain_graph=True) # say False on the last time step
         optimizer.step()
 
         # wait for all CUDA work on the GPU to finish then calculate iteration time taken
@@ -851,6 +858,7 @@ if __name__ == '__main__':
 
         # evaluate the model
         if step > 0 and step % 200 == 0:
+            printObjects() # prints currently alive Tensors and Variables
             # print("\n"+'-'*30+" TRAIN "+'-'*30)
             train_loss = evaluate(model, train_dataset, data_mode, batch_size=args.batch_size, max_batches=10, num_print=10)
             # print("\n"+'-'*30+" TEST "+'-'*30)
@@ -874,4 +882,4 @@ if __name__ == '__main__':
         step += 1
         # termination conditions
         if args.max_steps >= 0 and step >= args.max_steps:
-            break
+            break # free memory with `loss.backward(retain_graph=False)` or some such if proceeding from here
