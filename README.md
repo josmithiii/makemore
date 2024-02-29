@@ -1,4 +1,4 @@
-# This Fork
+# This Fork is OBSOLETE - replaced by ../makelogits/
 
 Adds mamba-minimal to compare it with transformers et al.
 
